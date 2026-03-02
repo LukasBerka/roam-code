@@ -195,6 +195,27 @@ def _dead_action(r, file_imported):
     if kind == "method" and name in _ABC_METHOD_NAMES:
         return "INTENTIONAL", 10
 
+    # Django framework entry points -- invoked by framework, not by imports
+    django_entry = _is_django_entry_path(r["file_path"])
+    if django_entry:
+        return "INTENTIONAL", 10
+
+    # Django framework_type tagged symbols (from Phase 1 extraction)
+    # Use try/except because sqlite3.Row does not support .get()
+    try:
+        framework_type = r["framework_type"] or ""
+    except (KeyError, IndexError):
+        framework_type = ""
+    if framework_type.startswith("django_"):
+        return "INTENTIONAL", 10
+
+    # Celery/signal decorators in signature (any file, not just tasks.py)
+    sig = r["signature"] or ""
+    if "@receiver(" in sig:
+        return "INTENTIONAL", 15
+    if re.search(r"@(?:app\.task|shared_task|celery_app\.task)", sig):
+        return "INTENTIONAL", 15
+
     # Entry point / lifecycle hooks (check original case for camelCase hooks)
     if name in _ENTRY_NAMES or name_lower in _ENTRY_NAMES:
         return "INTENTIONAL", 60
