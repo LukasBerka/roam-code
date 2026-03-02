@@ -190,3 +190,184 @@ class TestHealthDjangoSuppression:
     def test_utility_path_regular_not_utility(self):
         """views.py should NOT be a utility path."""
         assert not _is_utility_path("myapp/views.py")
+
+
+# ============================================================================
+# CLI integration tests with Django project fixture
+# ============================================================================
+
+
+@pytest.fixture
+def django_project(tmp_path):
+    """Create a minimal Django project with all suppression-relevant patterns."""
+    proj = tmp_path / "djangoproj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text(".roam/\n")
+
+    # models.py with a Django model (imports admin to create cross-refs)
+    (proj / "models.py").write_text(
+        "from django.db import models\n"
+        "\n"
+        "class Article(models.Model):\n"
+        "    title = models.CharField(max_length=200)\n"
+        "    body = models.TextField()\n"
+        "\n"
+        "    def __str__(self):\n"
+        "        return self.title\n"
+    )
+
+    # admin.py with admin class
+    (proj / "admin.py").write_text(
+        "from django.contrib import admin\n"
+        "from models import Article\n"
+        "\n"
+        "class ArticleAdmin(admin.ModelAdmin):\n"
+        "    list_display = ['title']\n"
+    )
+
+    # urls.py with urlpatterns (many routes = high connectivity)
+    (proj / "urls.py").write_text(
+        "from views import index_view, detail_view, create_view, edit_view\n"
+        "from views import delete_view, list_view, search_view, archive_view\n"
+        "\n"
+        "urlpatterns = [\n"
+        "    ('/', index_view),\n"
+        "    ('/detail', detail_view),\n"
+        "    ('/create', create_view),\n"
+        "    ('/edit', edit_view),\n"
+        "    ('/delete', delete_view),\n"
+        "    ('/list', list_view),\n"
+        "    ('/search', search_view),\n"
+        "    ('/archive', archive_view),\n"
+        "]\n"
+    )
+
+    # views.py with view functions referenced by urls.py
+    (proj / "views.py").write_text(
+        "from models import Article\n"
+        "\n"
+        "def index_view(request):\n"
+        "    return Article.objects.all()\n"
+        "\n"
+        "def detail_view(request):\n"
+        "    return Article.objects.first()\n"
+        "\n"
+        "def create_view(request):\n"
+        "    return Article(title='new')\n"
+        "\n"
+        "def edit_view(request):\n"
+        "    return Article.objects.first()\n"
+        "\n"
+        "def delete_view(request):\n"
+        "    return None\n"
+        "\n"
+        "def list_view(request):\n"
+        "    return Article.objects.all()\n"
+        "\n"
+        "def search_view(request):\n"
+        "    return Article.objects.filter(title='query')\n"
+        "\n"
+        "def archive_view(request):\n"
+        "    return Article.objects.all()\n"
+    )
+
+    # signals.py with @receiver
+    (proj / "signals.py").write_text(
+        "from django.db.models.signals import post_save\n"
+        "from django.dispatch import receiver\n"
+        "from models import Article\n"
+        "\n"
+        "@receiver(post_save, sender=Article)\n"
+        "def on_article_saved(sender, instance, **kwargs):\n"
+        "    pass\n"
+    )
+
+    # tasks.py with @shared_task
+    (proj / "tasks.py").write_text(
+        "from celery import shared_task\n"
+        "from models import Article\n"
+        "\n"
+        "@shared_task\n"
+        "def process_articles():\n"
+        "    return Article.objects.count()\n"
+    )
+
+    # management/commands/import_data.py
+    mgmt = proj / "management"
+    mgmt.mkdir()
+    (mgmt / "__init__.py").write_text("")
+    cmds = mgmt / "commands"
+    cmds.mkdir()
+    (cmds / "__init__.py").write_text("")
+    (cmds / "import_data.py").write_text(
+        "from django.core.management.base import BaseCommand\n"
+        "\n"
+        "class Command(BaseCommand):\n"
+        "    def handle(self, *args, **options):\n"
+        "        pass\n"
+    )
+
+    # templatetags/custom_tags.py
+    ttags = proj / "templatetags"
+    ttags.mkdir()
+    (ttags / "__init__.py").write_text("")
+    (ttags / "custom_tags.py").write_text(
+        "from django import template\n"
+        "\n"
+        "register = template.Library()\n"
+        "\n"
+        "@register.simple_tag\n"
+        "def show_title(article):\n"
+        "    return article.title\n"
+    )
+
+    git_init(proj)
+    return proj
+
+
+class TestDjangoSuppressionCLI:
+    """CLI integration tests for Django suppression rules."""
+
+    def test_dead_json_django_admin_intentional(self, cli_runner, django_project, monkeypatch):
+        """Django entry point symbols should get INTENTIONAL action in dead output."""
+        monkeypatch.chdir(django_project)
+        index_in_process(django_project)
+        result = invoke_cli(
+            cli_runner,
+            ["--detail", "dead"],
+            cwd=django_project,
+            json_mode=True,
+        )
+        data = parse_json_output(result, "dead")
+        # Collect all symbols from both confidence tiers
+        all_syms = data.get("high_confidence", []) + data.get("low_confidence", [])
+
+        # Find any symbols from Django entry point files
+        django_entry_files = ("admin.py", "signals.py", "tasks.py")
+        django_entry_syms = [
+            s for s in all_syms
+            if any(s.get("location", "").endswith(f) or f in s.get("location", "") for f in django_entry_files)
+        ]
+        # All Django entry point symbols should be INTENTIONAL
+        for sym in django_entry_syms:
+            assert sym["action"] == "INTENTIONAL", (
+                f"Django entry symbol {sym['name']} in {sym.get('location')} "
+                f"should be INTENTIONAL, got {sym['action']}"
+            )
+
+    def test_health_no_urlpatterns_god_component(self, cli_runner, django_project, monkeypatch):
+        """urlpatterns should not appear in god_components list."""
+        monkeypatch.chdir(django_project)
+        index_in_process(django_project)
+        result = invoke_cli(
+            cli_runner,
+            ["--detail", "health"],
+            cwd=django_project,
+            json_mode=True,
+        )
+        data = parse_json_output(result, "health")
+        god_components = data.get("god_components", [])
+        god_names = [g["name"] for g in god_components]
+        assert "urlpatterns" not in god_names, (
+            f"urlpatterns should be suppressed from god_components, found: {god_names}"
+        )
