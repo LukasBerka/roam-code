@@ -1792,6 +1792,71 @@ def detect_loop_invariant_call(conn):
 
 
 # ---------------------------------------------------------------------------
+# ORM analysis detectors
+# ---------------------------------------------------------------------------
+
+_ORM_ACCESS_PATTERNS = {
+    ".objects.",
+    ".filter(",
+    ".get(",
+    ".all()",
+    ".exclude(",
+    ".annotate(",
+    ".aggregate(",
+    ".values(",
+    ".values_list(",
+    ".order_by(",
+}
+
+
+def detect_missing_eager_loading(conn):
+    """Detect Django ORM access without select_related/prefetch_related.
+
+    Finds functions/methods that use ORM query patterns but lack eager
+    loading guards, indicating potential N+1 query issues.
+    """
+    rows = conn.execute(
+        "SELECT s.id, s.name, s.qualified_name, s.kind, f.path as file_path, "
+        "f.language as language, s.line_start, s.line_end "
+        "FROM symbols s "
+        "JOIN files f ON s.file_id = f.id "
+        "WHERE s.kind IN ('function', 'method') "
+        "AND f.language = 'python'"
+    ).fetchall()
+
+    results = []
+    for r in rows:
+        if _is_test_path(r["file_path"]):
+            continue
+        snippet = _read_symbol_source(
+            r["file_path"],
+            _row_value(r, "line_start", None),
+            _row_value(r, "line_end", None),
+        )
+        if not snippet:
+            continue
+        snippet_lower = snippet.lower()
+        orm_hits = [p for p in _ORM_ACCESS_PATTERNS if p in snippet_lower]
+        if not orm_hits:
+            continue
+        guard_hints = _guard_hints_from_source("python", snippet)
+        if guard_hints:
+            continue
+        results.append(
+            _finding(
+                "missing-eager-loading",
+                "no-prefetch",
+                r,
+                f"ORM access ({', '.join(orm_hits[:3])}) without select_related/prefetch_related",
+                "medium",
+                evidence={"orm_patterns": orm_hits[:6]},
+                fix="Add .select_related() or .prefetch_related() to prevent N+1 queries",
+            )
+        )
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Confidence calibration
 # ---------------------------------------------------------------------------
 
