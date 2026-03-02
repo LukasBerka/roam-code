@@ -671,6 +671,161 @@ class TestRoutesTo:
 
 
 # ---------------------------------------------------------------------------
+# include() resolution mechanism
+# ---------------------------------------------------------------------------
+
+
+class TestIncludeResolution:
+    def setup_method(self):
+        self.bridge = DjangoBridge()
+        self.target_files = {
+            "myapp/urls.py": [
+                _func_symbol(
+                    "urlpatterns",
+                    qname="myapp.urls.urlpatterns",
+                    signature="path('users/', views.user_list)",
+                ),
+            ],
+            "myapp/views.py": [
+                _func_symbol("user_list", qname="myapp.views.user_list"),
+            ],
+        }
+
+    def test_simple_include(self):
+        source_symbols = [
+            _func_symbol(
+                "urlpatterns",
+                qname="project.urls.urlpatterns",
+                signature="path('api/', include('myapp.urls'))",
+            ),
+        ]
+        edges = self.bridge.resolve("project/urls.py", source_symbols, self.target_files)
+        route_edges = [e for e in edges if e["mechanism"] == "routes_to"]
+        assert len(route_edges) >= 1
+        assert any(
+            e["target"] == "myapp.views.user_list" and "api/users/" in e.get("url_pattern", "")
+            for e in route_edges
+        )
+
+    def test_include_with_namespace(self):
+        source_symbols = [
+            _func_symbol(
+                "urlpatterns",
+                qname="project.urls.urlpatterns",
+                signature="path('api/', include('myapp.urls', namespace='api'))",
+            ),
+        ]
+        edges = self.bridge.resolve("project/urls.py", source_symbols, self.target_files)
+        route_edges = [e for e in edges if e["mechanism"] == "routes_to"]
+        assert len(route_edges) >= 1
+        assert any(e.get("namespace") == "api" for e in route_edges)
+
+    def test_include_nonexistent_module(self):
+        source_symbols = [
+            _func_symbol(
+                "urlpatterns",
+                qname="project.urls.urlpatterns",
+                signature="path('api/', include('nonexistent.urls'))",
+            ),
+        ]
+        edges = self.bridge.resolve("project/urls.py", source_symbols, self.target_files)
+        route_edges = [e for e in edges if e["mechanism"] == "routes_to"]
+        assert len(route_edges) == 0
+
+    def test_include_confidence(self):
+        source_symbols = [
+            _func_symbol(
+                "urlpatterns",
+                qname="project.urls.urlpatterns",
+                signature="path('api/', include('myapp.urls'))",
+            ),
+        ]
+        edges = self.bridge.resolve("project/urls.py", source_symbols, self.target_files)
+        route_edges = [e for e in edges if e["mechanism"] == "routes_to"]
+        assert len(route_edges) >= 1
+        assert route_edges[0]["confidence"] == 0.95
+
+    def test_include_url_prefix_prepended(self):
+        source_symbols = [
+            _func_symbol(
+                "urlpatterns",
+                qname="project.urls.urlpatterns",
+                signature="path('v2/', include('myapp.urls'))",
+            ),
+        ]
+        edges = self.bridge.resolve("project/urls.py", source_symbols, self.target_files)
+        route_edges = [e for e in edges if e["mechanism"] == "routes_to"]
+        assert len(route_edges) >= 1
+        assert any("v2/users/" in e.get("url_pattern", "") for e in route_edges)
+
+
+# ---------------------------------------------------------------------------
+# DRF router resolution mechanism
+# ---------------------------------------------------------------------------
+
+
+class TestDRFRouterResolution:
+    def setup_method(self):
+        self.bridge = DjangoBridge()
+        self.target_files = {
+            "myapp/views.py": [
+                _class_symbol("BookViewSet", qname="myapp.views.BookViewSet"),
+            ],
+        }
+
+    def test_basic_router_register(self):
+        source_symbols = [
+            _func_symbol(
+                "urlpatterns",
+                qname="myapp.urls.urlpatterns",
+                signature="router.register(r'books', BookViewSet)",
+            ),
+        ]
+        edges = self.bridge.resolve("myapp/urls.py", source_symbols, self.target_files)
+        route_edges = [e for e in edges if e["mechanism"] == "routes_to"]
+        assert len(route_edges) >= 1
+        assert any(e["target"] == "myapp.views.BookViewSet" for e in route_edges)
+
+    def test_router_url_pattern(self):
+        source_symbols = [
+            _func_symbol(
+                "urlpatterns",
+                qname="myapp.urls.urlpatterns",
+                signature="router.register(r'books', BookViewSet)",
+            ),
+        ]
+        edges = self.bridge.resolve("myapp/urls.py", source_symbols, self.target_files)
+        route_edges = [e for e in edges if e["mechanism"] == "routes_to"]
+        patterns = {e.get("url_pattern", "") for e in route_edges}
+        assert any("books/" in p for p in patterns)
+
+    def test_router_nonexistent_viewset(self):
+        source_symbols = [
+            _func_symbol(
+                "urlpatterns",
+                qname="myapp.urls.urlpatterns",
+                signature="router.register(r'books', NonExistentViewSet)",
+            ),
+        ]
+        edges = self.bridge.resolve("myapp/urls.py", source_symbols, self.target_files)
+        route_edges = [e for e in edges if e["mechanism"] == "routes_to"]
+        assert len(route_edges) == 0
+
+    def test_router_confidence(self):
+        source_symbols = [
+            _func_symbol(
+                "urlpatterns",
+                qname="myapp.urls.urlpatterns",
+                signature="router.register(r'books', BookViewSet)",
+            ),
+        ]
+        edges = self.bridge.resolve("myapp/urls.py", source_symbols, self.target_files)
+        route_edges = [e for e in edges if e["mechanism"] == "routes_to"]
+        assert len(route_edges) >= 1
+        assert all(e["confidence"] == 0.80 for e in route_edges)
+
+
+# ---------------------------------------------------------------------------
 # Edge confidence scoring and metadata
 # ---------------------------------------------------------------------------
 
