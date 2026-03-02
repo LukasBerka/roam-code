@@ -82,6 +82,13 @@ _ENTRY_NAMES = {
     "afterEach",
     "beforeAll",
     "afterAll",
+    # Django entry points
+    "handle",
+    "ready",
+    "get_queryset",
+    "get_context_data",
+    "form_valid",
+    "dispatch",
 }
 _ENTRY_FILE_BASES = {
     "server",
@@ -95,6 +102,15 @@ _ENTRY_FILE_BASES = {
     "start",
     "entry",
     "worker",
+    "admin",
+    "signals",
+    "tasks",
+    "urls",
+    "views",
+    "forms",
+    "serializers",
+    "filters",
+    "apps",
 }
 _API_PREFIXES = (
     "get",
