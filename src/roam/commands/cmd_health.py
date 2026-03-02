@@ -321,6 +321,20 @@ def health(ctx, no_framework, gate):
                     }
                 )
 
+        # --- Django-specific suppressions ---
+        # urlpatterns in urls.py is a framework structural pattern, not a god component.
+        # Django URL configs naturally have high connectivity (one entry per route).
+        django_filtered = 0
+        god_items_filtered = []
+        for g in god_items:
+            file_lower = g["file"].replace("\\", "/").lower()
+            file_base = file_lower.rsplit("/", 1)[-1] if "/" in file_lower else file_lower
+            if g["name"] == "urlpatterns" and file_base.startswith("urls"):
+                django_filtered += 1
+                continue
+            god_items_filtered.append(g)
+        god_items = god_items_filtered
+
         # --- Bottlenecks (percentile-based severity) ---
         # Fetch all non-zero betweenness values to compute percentile thresholds.
         # Raw betweenness is unnormalized (shortest-path counts), so absolute
@@ -352,6 +366,7 @@ def health(ctx, no_framework, gate):
             god_items = [g for g in god_items if g["name"] not in _FRAMEWORK_NAMES]
             bn_items = [b for b in bn_items if b["name"] not in _FRAMEWORK_NAMES]
             filtered_count = before - len(god_items) - len(bn_items)
+        filtered_count += django_filtered
 
         # --- Layer violations ---
         layer_map = detect_layers(G)
