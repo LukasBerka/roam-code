@@ -72,6 +72,21 @@ _URL_PATH_RE = re.compile(
 )
 _AS_VIEW_RE = re.compile(r"(\w+)\.as_view\(\)")
 
+# --- include() pattern regex ---
+# Matches: include('app.urls'), include('app.urls', namespace='ns'),
+#          include(('app.urls', 'app'), namespace='ns')
+_INCLUDE_RE = re.compile(
+    r"include\(\s*(?:\(?\s*)?['\"]([^'\"]+)['\"]"
+    r"(?:.*?namespace\s*=\s*['\"](\w+)['\"])?"
+)
+
+# --- DRF router.register() pattern regex ---
+# Matches: router.register(r'prefix', ViewSetClass)
+#          router.register(r'prefix', ViewSetClass, basename='name')
+_DRF_ROUTER_RE = re.compile(
+    r"(?:\w+)\.register\(\s*r?['\"]([^'\"]*)['\"],\s*(\w+)"
+)
+
 
 def _build_model_index(
     target_files: dict[str, list[dict]],
