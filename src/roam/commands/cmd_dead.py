@@ -128,6 +128,32 @@ _ABC_METHOD_NAMES = frozenset(
     }
 )
 
+# Django framework entry point path patterns.
+# Symbols in these paths are invoked by Django's framework machinery,
+# not by direct imports, so they appear unreferenced but are alive.
+_DJANGO_ADMIN_BASES = ("admin.py",)
+_DJANGO_MGMT_PATH = "management/commands/"
+_DJANGO_TEMPLATETAGS_PATH = "templatetags/"
+_DJANGO_TASKS_BASES = ("tasks.py",)
+_DJANGO_SIGNALS_BASES = ("signals.py",)
+
+
+def _is_django_entry_path(file_path):
+    """Check if a file path indicates a Django framework entry point."""
+    p = file_path.replace("\\", "/").lower()
+    base = p.rsplit("/", 1)[-1] if "/" in p else p
+    if base in _DJANGO_ADMIN_BASES:
+        return "admin"
+    if _DJANGO_MGMT_PATH in p:
+        return "management_command"
+    if _DJANGO_TEMPLATETAGS_PATH in p:
+        return "template_tag"
+    if base in _DJANGO_TASKS_BASES:
+        return "celery_task"
+    if base in _DJANGO_SIGNALS_BASES:
+        return "signal_handler"
+    return None
+
 
 def _is_test_path(file_path):
     """Check if a file is a test file (discovered by pytest, not imported)."""
