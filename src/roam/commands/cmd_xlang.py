@@ -210,7 +210,21 @@ def _get_file_symbols(conn, path):
     if not frow:
         return []
     syms = conn.execute(
-        "SELECT name, qualified_name, kind FROM symbols WHERE file_id = ?",
+        "SELECT s.name, s.qualified_name, s.kind, s.signature, s.framework_type,"
+        " p.qualified_name AS parent_qualified_name"
+        " FROM symbols s"
+        " LEFT JOIN symbols p ON s.parent_id = p.id"
+        " WHERE s.file_id = ?",
         (frow["id"],),
     ).fetchall()
-    return [{"name": s["name"], "qualified_name": s["qualified_name"], "kind": s["kind"]} for s in syms]
+    return [
+        {
+            "name": s["name"],
+            "qualified_name": s["qualified_name"],
+            "kind": s["kind"],
+            "signature": s["signature"] or "",
+            "framework_type": s["framework_type"],
+            "parent_name": s["parent_qualified_name"],
+        }
+        for s in syms
+    ]
