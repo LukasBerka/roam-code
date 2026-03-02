@@ -124,6 +124,25 @@ def _build_symbol_index(
     return index
 
 
+def _find_url_file(
+    module_path: str,
+    target_files: dict[str, list[dict]],
+) -> str | None:
+    """Map a dotted module path (e.g. 'myapp.urls') to a file key in target_files.
+
+    Converts dots to path separators and checks for a matching key ending
+    with the resulting suffix (e.g. 'myapp/urls.py').
+    """
+    # Convert 'myapp.urls' -> 'myapp/urls.py'
+    suffix = module_path.replace(".", "/") + ".py"
+    for file_key in target_files:
+        # Normalise backslashes for Windows paths
+        normalised = file_key.replace("\\", "/")
+        if normalised == suffix or normalised.endswith("/" + suffix):
+            return file_key
+    return None
+
+
 class DjangoBridge(LanguageBridge):
     """Bridge for implicit Django relationships across Python files."""
 
@@ -468,6 +487,98 @@ class DjangoBridge(LanguageBridge):
                 edge = self._make_url_edge(qname, view_class, "", symbol_index)
                 if edge:
                     edges.append(edge)
+
+            # Match include() patterns and resolve recursively
+            for m in _INCLUDE_RE.finditer(sig):
+                module_path = m.group(1)
+                namespace = m.group(2)  # May be None
+                # Extract URL prefix from the parent path()/url() wrapping
+                prefix_m = _URL_PATH_RE.search(sig)
+                url_prefix = prefix_m.group(1) if prefix_m else ""
+                include_edges = self._resolve_include(
+                    qname, module_path, namespace, url_prefix,
+                    target_files, symbol_index, depth=0,
+                )
+                edges.extend(include_edges)
+
+        return edges
+
+    def _resolve_include(
+        self,
+        source_qname: str,
+        module_path: str,
+        namespace: str | None,
+        url_prefix: str,
+        target_files: dict[str, list[dict]],
+        symbol_index: dict[str, str],
+        depth: int,
+    ) -> list[dict]:
+        """Recursively resolve include() patterns to routes_to edges."""
+        if depth >= 5:
+            return []
+
+        url_file = _find_url_file(module_path, target_files)
+        if url_file is None:
+            return []
+
+        edges: list[dict] = []
+        included_symbols = target_files[url_file]
+        confidence = 0.95 if depth == 0 else 0.85
+
+        for sym in included_symbols:
+            sig = sym.get("signature", "") or ""
+
+            # Match path()/re_path()/url() in included file
+            for m in _URL_PATH_RE.finditer(sig):
+                child_pattern = m.group(1)
+                view_ref = m.group(2)
+                full_pattern = url_prefix + child_pattern
+                view_name = view_ref.rsplit(".", 1)[-1] if "." in view_ref else view_ref
+                target_qname = symbol_index.get(view_name)
+                if target_qname is None:
+                    continue
+                edge: dict = {
+                    "source": source_qname,
+                    "target": target_qname,
+                    "kind": "x-lang",
+                    "bridge": self.name,
+                    "mechanism": "routes_to",
+                    "confidence": confidence,
+                    "url_pattern": full_pattern,
+                }
+                if namespace:
+                    edge["namespace"] = namespace
+                edges.append(edge)
+
+            # Match Class.as_view() in included file
+            for m in _AS_VIEW_RE.finditer(sig):
+                view_class = m.group(1)
+                target_qname = symbol_index.get(view_class)
+                if target_qname is None:
+                    continue
+                edge = {
+                    "source": source_qname,
+                    "target": target_qname,
+                    "kind": "x-lang",
+                    "bridge": self.name,
+                    "mechanism": "routes_to",
+                    "confidence": confidence,
+                    "url_pattern": url_prefix,
+                }
+                if namespace:
+                    edge["namespace"] = namespace
+                edges.append(edge)
+
+            # Nested include() - recurse
+            for m in _INCLUDE_RE.finditer(sig):
+                nested_module = m.group(1)
+                nested_ns = m.group(2) or namespace
+                nested_prefix_m = _URL_PATH_RE.search(sig)
+                nested_prefix = url_prefix + (nested_prefix_m.group(1) if nested_prefix_m else "")
+                edges.extend(self._resolve_include(
+                    source_qname, nested_module, nested_ns, nested_prefix,
+                    target_files, symbol_index, depth + 1,
+                ))
 
         return edges
 
