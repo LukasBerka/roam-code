@@ -606,6 +606,54 @@ class DjangoBridge(LanguageBridge):
             edge["url_pattern"] = url_pattern
         return edge
 
+    # ------------------------------------------------------------------
+    # DRF router mechanism
+    # ------------------------------------------------------------------
+
+    def _resolve_drf_routers(
+        self,
+        source_path: str,
+        source_symbols: list[dict],
+        target_files: dict[str, list[dict]],
+    ) -> list[dict]:
+        """Detect DRF router.register() calls and synthesize routes_to edges."""
+        edges: list[dict] = []
+        path_lower = source_path.lower()
+        if "urls" not in path_lower and "url" not in path_lower:
+            return edges
+
+        symbol_index = _build_symbol_index(target_files)
+
+        for sym in source_symbols:
+            sig = sym.get("signature", "") or ""
+            qname = sym.get("qualified_name", sym.get("name", ""))
+
+            for m in _DRF_ROUTER_RE.finditer(sig):
+                prefix = m.group(1)
+                viewset_name = m.group(2)
+                target_qname = symbol_index.get(viewset_name)
+                if target_qname is None:
+                    continue
+
+                # Synthesize list and detail routes
+                list_pattern = f"{prefix}/" if prefix else "/"
+                detail_pattern = f"{prefix}/{{id}}/" if prefix else "/{id}/"
+
+                for url_pattern in (list_pattern, detail_pattern):
+                    edges.append(
+                        {
+                            "source": qname,
+                            "target": target_qname,
+                            "kind": "x-lang",
+                            "bridge": self.name,
+                            "mechanism": "routes_to",
+                            "confidence": 0.80,
+                            "url_pattern": url_pattern,
+                        }
+                    )
+
+        return edges
+
 
 # Auto-register on import
 register_bridge(DjangoBridge())
