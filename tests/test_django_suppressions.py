@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from conftest import git_commit, git_init, index_in_process, invoke_cli, parse_json_output
 
 from roam.commands.cmd_dead import _dead_action, _is_django_entry_path
+from roam.commands.cmd_health import _FRAMEWORK_NAMES, _is_utility_path
 
 
 # ============================================================================
@@ -156,3 +157,36 @@ class TestDeadActionDjango:
         action, confidence = _dead_action(row, file_imported=False)
         # models.py is not a Django entry path, so this should be SAFE or REVIEW, not INTENTIONAL
         assert action != "INTENTIONAL" or confidence > 50
+
+
+# ============================================================================
+# Unit tests for cmd_health.py Django suppressions
+# ============================================================================
+
+
+class TestHealthDjangoSuppression:
+    """Tests for Django-specific filtering in cmd_health.py."""
+
+    def test_framework_names_include_urlpatterns(self):
+        """_FRAMEWORK_NAMES should include 'urlpatterns' for --no-framework filter."""
+        assert "urlpatterns" in _FRAMEWORK_NAMES
+
+    def test_framework_names_include_application(self):
+        """_FRAMEWORK_NAMES should include 'application' (WSGI/ASGI)."""
+        assert "application" in _FRAMEWORK_NAMES
+
+    def test_utility_path_management_commands(self):
+        """management/commands/ should be detected as a utility path."""
+        assert _is_utility_path("myapp/management/commands/foo.py")
+
+    def test_utility_path_templatetags(self):
+        """templatetags/ should be detected as a utility path."""
+        assert _is_utility_path("myapp/templatetags/foo.py")
+
+    def test_utility_path_migrations(self):
+        """migrations/ should be detected as a utility path."""
+        assert _is_utility_path("myapp/migrations/0001_initial.py")
+
+    def test_utility_path_regular_not_utility(self):
+        """views.py should NOT be a utility path."""
+        assert not _is_utility_path("myapp/views.py")
