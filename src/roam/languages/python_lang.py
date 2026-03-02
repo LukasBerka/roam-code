@@ -2,6 +2,70 @@ from __future__ import annotations
 
 from .base import LanguageExtractor
 
+# Known Django model field type names
+_DJANGO_FIELD_TYPES = frozenset(
+    {
+        "CharField",
+        "IntegerField",
+        "FloatField",
+        "DecimalField",
+        "BooleanField",
+        "TextField",
+        "DateField",
+        "DateTimeField",
+        "TimeField",
+        "EmailField",
+        "URLField",
+        "UUIDField",
+        "SlugField",
+        "FileField",
+        "ImageField",
+        "JSONField",
+        "BinaryField",
+        "AutoField",
+        "BigAutoField",
+        "SmallAutoField",
+        "BigIntegerField",
+        "SmallIntegerField",
+        "PositiveIntegerField",
+        "PositiveSmallIntegerField",
+        "PositiveBigIntegerField",
+        "DurationField",
+        "GenericIPAddressField",
+        "FilePathField",
+        "ForeignKey",
+        "OneToOneField",
+        "ManyToManyField",
+    }
+)
+
+# Django relationship field types that create FK/M2M/O2O references
+_DJANGO_RELATIONSHIP_FIELDS = frozenset(
+    {
+        "ForeignKey",
+        "OneToOneField",
+        "ManyToManyField",
+    }
+)
+
+# Map relationship field type to reference kind
+_DJANGO_REL_KIND = {
+    "ForeignKey": "django_fk",
+    "OneToOneField": "django_o2o",
+    "ManyToManyField": "django_m2m",
+}
+
+# Base classes that indicate a Django model
+_DJANGO_MODEL_BASES = frozenset(
+    {
+        "Model",
+        "models.Model",
+        "TimeStampedModel",
+        "AbstractUser",
+        "AbstractBaseUser",
+    }
+)
+
 # Builtin type names that don't create real reference edges
 _BUILTIN_TYPES = frozenset(
     {
@@ -35,6 +99,7 @@ class PythonExtractor(LanguageExtractor):
     def extract_symbols(self, tree, source: bytes, file_path: str) -> list[dict]:
         symbols = []
         self._pending_inherits = []
+        self._pending_django_refs = []
         dunder_all = self._find_dunder_all(tree.root_node, source)
         self._walk_node(tree.root_node, source, file_path, symbols, parent_name=None, dunder_all=dunder_all)
         return symbols
@@ -50,6 +115,16 @@ class PythonExtractor(LanguageExtractor):
                     kind="inherits",
                     line=info["line"],
                     source_name=info["class_name"],
+                )
+            )
+        # Add Django relationship references collected during symbol extraction
+        for info in getattr(self, "_pending_django_refs", []):
+            refs.append(
+                self._make_reference(
+                    target_name=info["target_model"],
+                    kind=info["kind"],
+                    line=info["line"],
+                    source_name=info["source_class"],
                 )
             )
         return refs
@@ -257,11 +332,14 @@ class PythonExtractor(LanguageExtractor):
 
         # Extract base class names for inheritance tracking
         bases_node = node.child_by_field_name("superclasses")
+        is_django_model = False
         if bases_node:
             for child in bases_node.children:
                 if child.type == "identifier":
                     base_name = self.node_text(child, source)
                     if base_name:
+                        if base_name in _DJANGO_MODEL_BASES:
+                            is_django_model = True
                         self._pending_inherits.append(
                             {
                                 "class_name": qualified,
@@ -272,6 +350,8 @@ class PythonExtractor(LanguageExtractor):
                 elif child.type == "attribute":
                     base_name = self.node_text(child, source)
                     if base_name:
+                        if base_name in _DJANGO_MODEL_BASES:
+                            is_django_model = True
                         # Use just the last part for matching (e.g. "enum.Enum" -> "Enum")
                         short_name = base_name.split(".")[-1]
                         self._pending_inherits.append(
@@ -281,6 +361,8 @@ class PythonExtractor(LanguageExtractor):
                                 "line": node.start_point[0] + 1,
                             }
                         )
+        if is_django_model:
+            symbols[-1]["framework_type"] = "django_model"
 
         # Walk class body for methods and nested classes
         body = node.child_by_field_name("body")
@@ -336,18 +418,138 @@ class PythonExtractor(LanguageExtractor):
 
         qualified = f"{parent_name}.{name}" if parent_name else name
         vis = self._visibility(name)
-        symbols.append(
-            self._make_symbol(
-                name=name,
-                kind="property",
-                line_start=node.start_point[0] + 1,
-                line_end=node.end_point[0] + 1,
-                qualified_name=qualified,
-                visibility=vis,
-                parent_name=parent_name,
-                default_value=default_value,
-            )
+        sym = self._make_symbol(
+            name=name,
+            kind="property",
+            line_start=node.start_point[0] + 1,
+            line_end=node.end_point[0] + 1,
+            qualified_name=qualified,
+            visibility=vis,
+            parent_name=parent_name,
+            default_value=default_value,
         )
+
+        # Detect Django model fields on RHS
+        if right and right.type == "call":
+            field_type = self._detect_django_field_type(right, source)
+            if field_type:
+                sym["django_field"] = True
+                sym["field_type"] = field_type
+                # Extract relationship metadata for FK/M2M/O2O
+                if field_type in _DJANGO_RELATIONSHIP_FIELDS:
+                    meta = self._extract_django_field_meta(right, source)
+                    if meta.get("target_model"):
+                        sym["relationship_target"] = meta["target_model"]
+                    if meta.get("on_delete"):
+                        sym["on_delete"] = meta["on_delete"]
+                    if meta.get("related_name"):
+                        sym["related_name"] = meta["related_name"]
+                    # Create pending reference
+                    if meta.get("target_model"):
+                        self._pending_django_refs.append(
+                            {
+                                "source_class": parent_name,
+                                "target_model": meta["target_model"],
+                                "kind": _DJANGO_REL_KIND[field_type],
+                                "line": node.start_point[0] + 1,
+                            }
+                        )
+
+        # Handle Meta inner class attributes
+        if parent_name and parent_name.endswith(".Meta"):
+            grandparent = parent_name.rsplit(".Meta", 1)[0]
+            if name == "model" and right:
+                model_name = self._extract_meta_model_target(right, source)
+                if model_name:
+                    self._pending_django_refs.append(
+                        {
+                            "source_class": grandparent,
+                            "target_model": model_name,
+                            "kind": "meta_model",
+                            "line": node.start_point[0] + 1,
+                        }
+                    )
+            elif name == "fields" and right and right.type == "list":
+                field_list = self._extract_string_list(right, source)
+                if field_list:
+                    sym["meta_fields"] = field_list
+
+        symbols.append(sym)
+
+    def _detect_django_field_type(self, call_node, source: bytes) -> str | None:
+        """Detect if a call node is a Django field constructor, return field type name."""
+        func = call_node.child_by_field_name("function")
+        if func is None:
+            return None
+        if func.type == "attribute":
+            # models.CharField(...) -> extract "CharField"
+            attr = func.child_by_field_name("attribute")
+            if attr:
+                attr_name = self.node_text(attr, source)
+                if attr_name in _DJANGO_FIELD_TYPES:
+                    return attr_name
+        elif func.type == "identifier":
+            # CharField(...) (bare import)
+            func_name = self.node_text(func, source)
+            if func_name in _DJANGO_FIELD_TYPES:
+                return func_name
+        return None
+
+    def _extract_django_field_meta(self, call_node, source: bytes) -> dict:
+        """Extract relationship metadata from a Django FK/M2M/O2O field call."""
+        result = {"target_model": None, "on_delete": None, "related_name": None}
+        args = call_node.child_by_field_name("arguments")
+        if args is None:
+            return result
+
+        # Extract first positional argument (the target model)
+        for child in args.children:
+            if child.type in ("identifier", "attribute", "string"):
+                if child.type == "string":
+                    result["target_model"] = self._extract_string_content(child, source)
+                elif child.type == "identifier":
+                    result["target_model"] = self.node_text(child, source)
+                elif child.type == "attribute":
+                    result["target_model"] = self.node_text(child, source)
+                break
+
+        # Extract keyword arguments
+        for child in args.children:
+            if child.type == "keyword_argument":
+                kw_name_node = child.child_by_field_name("name")
+                kw_value_node = child.child_by_field_name("value")
+                if kw_name_node and kw_value_node:
+                    kw_name = self.node_text(kw_name_node, source)
+                    if kw_name == "on_delete":
+                        result["on_delete"] = self.node_text(kw_value_node, source)
+                    elif kw_name == "related_name":
+                        if kw_value_node.type == "string":
+                            result["related_name"] = self._extract_string_content(
+                                kw_value_node, source
+                            )
+                        else:
+                            result["related_name"] = self.node_text(
+                                kw_value_node, source
+                            )
+        return result
+
+    def _extract_meta_model_target(self, node, source: bytes) -> str | None:
+        """Extract the model class name from a Meta class 'model = X' assignment."""
+        if node.type == "identifier":
+            return self.node_text(node, source)
+        if node.type == "attribute":
+            return self.node_text(node, source)
+        return None
+
+    def _extract_string_list(self, list_node, source: bytes) -> list[str]:
+        """Extract string elements from a list literal node."""
+        result = []
+        for child in list_node.children:
+            if child.type == "string":
+                content = self._extract_string_content(child, source)
+                if content:
+                    result.append(content)
+        return result
 
     def _extract_literal_value(self, node, source) -> str | None:
         """Extract a simple literal value from a node."""
