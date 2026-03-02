@@ -1856,6 +1856,135 @@ def detect_missing_eager_loading(conn):
     return results
 
 
+_RAW_SQL_PATTERNS = [
+    ("cursor.execute(", "high"),
+    ("connection.cursor()", "high"),
+    (".raw(", "medium"),
+    ("RawSQL(", "medium"),
+]
+
+
+def detect_raw_sql_usage(conn):
+    """Detect direct SQL execution bypassing the ORM.
+
+    Flags cursor.execute(), connection.cursor(), QuerySet.raw(),
+    RawSQL(), and deprecated extra() with raw SQL arguments.
+    """
+    rows = conn.execute(
+        "SELECT s.id, s.name, s.qualified_name, s.kind, f.path as file_path, "
+        "f.language as language, s.line_start, s.line_end "
+        "FROM symbols s "
+        "JOIN files f ON s.file_id = f.id "
+        "WHERE s.kind IN ('function', 'method') "
+        "AND f.language = 'python'"
+    ).fetchall()
+
+    results = []
+    for r in rows:
+        if _is_test_path(r["file_path"]):
+            continue
+        snippet = _read_symbol_source(
+            r["file_path"],
+            _row_value(r, "line_start", None),
+            _row_value(r, "line_end", None),
+        )
+        if not snippet:
+            continue
+        found_patterns: list[tuple[str, str]] = []
+        for pattern, conf in _RAW_SQL_PATTERNS:
+            if pattern in snippet:
+                found_patterns.append((pattern, conf))
+        # Check deprecated extra() with raw SQL args
+        if "extra(" in snippet and ("select=" in snippet or "where=" in snippet):
+            found_patterns.append(("extra(select=/where=)", "medium"))
+        if not found_patterns:
+            continue
+        # Use the highest confidence among found patterns
+        confidence = "high" if any(c == "high" for _, c in found_patterns) else "medium"
+        pattern_names = [p for p, _ in found_patterns]
+        results.append(
+            _finding(
+                "raw-sql-usage",
+                "direct-sql",
+                r,
+                f"Raw SQL usage ({', '.join(pattern_names[:3])}) bypasses ORM safety",
+                confidence,
+                evidence={"patterns": pattern_names},
+            )
+        )
+    return results
+
+
+_ORM_CHAIN_METHODS = {
+    "filter", "exclude", "annotate", "aggregate", "values",
+    "values_list", "order_by", "distinct", "select_related",
+    "prefetch_related", "defer", "only",
+}
+
+_ORM_CHAIN_RE = re.compile(
+    r"\.(?:" + "|".join(_ORM_CHAIN_METHODS) + r")\s*\(",
+)
+
+
+def detect_queryset_chain_complexity(conn):
+    """Detect excessively long QuerySet method chains (4+ chained ORM calls).
+
+    Long chains may benefit from refactoring into named scopes or custom
+    QuerySet managers.
+    """
+    rows = conn.execute(
+        "SELECT s.id, s.name, s.qualified_name, s.kind, f.path as file_path, "
+        "f.language as language, s.line_start, s.line_end "
+        "FROM symbols s "
+        "JOIN files f ON s.file_id = f.id "
+        "WHERE s.kind IN ('function', 'method') "
+        "AND f.language = 'python'"
+    ).fetchall()
+
+    results = []
+    for r in rows:
+        if _is_test_path(r["file_path"]):
+            continue
+        snippet = _read_symbol_source(
+            r["file_path"],
+            _row_value(r, "line_start", None),
+            _row_value(r, "line_end", None),
+        )
+        if not snippet:
+            continue
+        # Find all ORM method calls and check for chain sequences
+        matches = list(_ORM_CHAIN_RE.finditer(snippet))
+        if len(matches) < 4:
+            continue
+        # Count maximum chain depth by proximity of matches
+        max_chain = 0
+        current_chain = 1
+        for i in range(1, len(matches)):
+            # Consecutive if next match starts within the region after
+            # the previous match (allowing for arguments and whitespace)
+            gap = snippet[matches[i - 1].end():matches[i].start()]
+            # A chain continues if the gap contains no statement breaks
+            if "\n\n" not in gap and ";" not in gap and "return " not in gap:
+                current_chain += 1
+            else:
+                max_chain = max(max_chain, current_chain)
+                current_chain = 1
+        max_chain = max(max_chain, current_chain)
+        if max_chain < 4:
+            continue
+        results.append(
+            _finding(
+                "queryset-chain-complexity",
+                "long-chain",
+                r,
+                f"QuerySet chain with {max_chain} chained ORM calls; consider named scopes",
+                "low",
+                evidence={"chain_length": max_chain},
+            )
+        )
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Confidence calibration
 # ---------------------------------------------------------------------------
