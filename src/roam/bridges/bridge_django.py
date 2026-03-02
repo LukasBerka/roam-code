@@ -188,6 +188,7 @@ class DjangoBridge(LanguageBridge):
         edges.extend(self._resolve_signals(source_symbols, model_index))
         edges.extend(self._resolve_celery(source_symbols))
         edges.extend(self._resolve_urls(source_path, source_symbols, target_files))
+        edges.extend(self._resolve_drf_routers(source_path, source_symbols, target_files))
 
         return edges
 
