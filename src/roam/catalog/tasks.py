@@ -538,6 +538,75 @@ CATALOG: dict[str, dict] = {
             },
         ],
     },
+    "missing-eager-loading": {
+        "name": "Missing eager loading on Django ORM query",
+        "category": "orm",
+        "kind": "pattern",
+        "ways": [
+            {
+                "id": "eager-load",
+                "name": "select_related / prefetch_related",
+                "time": "O(1) queries",
+                "space": "O(n)",
+                "rank": 1,
+                "tip": "Add .select_related() or .prefetch_related() to prevent N+1 queries",
+            },
+            {
+                "id": "no-prefetch",
+                "name": "Lazy loading (N+1 queries)",
+                "time": "O(n) queries",
+                "space": "O(1)",
+                "rank": 10,
+                "tip": "",
+            },
+        ],
+    },
+    "raw-sql-usage": {
+        "name": "Raw SQL usage bypassing ORM",
+        "category": "orm",
+        "kind": "pattern",
+        "ways": [
+            {
+                "id": "orm-query",
+                "name": "ORM query builder",
+                "time": "O(1)",
+                "space": "O(1)",
+                "rank": 1,
+                "tip": "Use the ORM query API for type safety and SQL injection prevention",
+            },
+            {
+                "id": "direct-sql",
+                "name": "Raw SQL via cursor/RawSQL/raw()",
+                "time": "O(1)",
+                "space": "O(1)",
+                "rank": 10,
+                "tip": "",
+            },
+        ],
+    },
+    "queryset-chain-complexity": {
+        "name": "Excessive QuerySet method chain",
+        "category": "orm",
+        "kind": "pattern",
+        "ways": [
+            {
+                "id": "named-scope",
+                "name": "Custom manager / named scope",
+                "time": "O(1)",
+                "space": "O(1)",
+                "rank": 1,
+                "tip": "Extract long chains into a custom QuerySet manager or named scope",
+            },
+            {
+                "id": "long-chain",
+                "name": "Long inline QuerySet chain (4+)",
+                "time": "O(1)",
+                "space": "O(1)",
+                "rank": 10,
+                "tip": "",
+            },
+        ],
+    },
 }
 
 

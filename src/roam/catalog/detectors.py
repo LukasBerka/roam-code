@@ -2015,6 +2015,9 @@ _DETECTOR_METADATA = {
     "branching-recursion": {"precision": "high", "impact": "high", "tags": ["recursion", "dp"]},
     "quadratic-string": {"precision": "high", "impact": "high", "tags": ["string", "quadratic"]},
     "loop-invariant-call": {"precision": "medium", "impact": "medium", "tags": ["hoisting"]},
+    "missing-eager-loading": {"precision": "medium", "impact": "high", "tags": ["orm", "n+1"]},
+    "raw-sql-usage": {"precision": "high", "impact": "medium", "tags": ["orm", "security"]},
+    "queryset-chain-complexity": {"precision": "low", "impact": "low", "tags": ["orm", "complexity"]},
 }
 
 
@@ -2486,6 +2489,9 @@ _MATH_DETECTORS = [
     ("branching-recursion", "naive-branching", detect_branching_recursion),
     ("quadratic-string", "augment-concat", detect_quadratic_string),
     ("loop-invariant-call", "repeated-call", detect_loop_invariant_call),
+    ("missing-eager-loading", "no-prefetch", detect_missing_eager_loading),
+    ("raw-sql-usage", "direct-sql", detect_raw_sql_usage),
+    ("queryset-chain-complexity", "long-chain", detect_queryset_chain_complexity),
 ]
 
 

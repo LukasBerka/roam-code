@@ -27,7 +27,7 @@ class TestCatalog:
     def test_catalog_has_entries(self):
         from roam.catalog.tasks import CATALOG
 
-        assert len(CATALOG) == 23, f"Expected 23 tasks, got {len(CATALOG)}"
+        assert len(CATALOG) == 26, f"Expected 26 tasks, got {len(CATALOG)}"
 
     def test_detector_registry_covers_catalog(self):
         from roam.catalog.detectors import _MATH_DETECTORS
@@ -63,14 +63,14 @@ class TestCatalog:
     def test_categories_are_valid(self):
         from roam.catalog.tasks import CATALOG
 
-        valid = {"searching", "ordering", "collections", "string", "math", "concurrency"}
+        valid = {"searching", "ordering", "collections", "string", "math", "concurrency", "orm"}
         for task_id, task in CATALOG.items():
             assert task["category"] in valid, f"{task_id} has invalid category: {task['category']}"
 
     def test_kinds_are_valid(self):
         from roam.catalog.tasks import CATALOG
 
-        valid_kinds = {"algorithm", "idiom"}
+        valid_kinds = {"algorithm", "idiom", "pattern"}
         for task_id, task in CATALOG.items():
             assert "kind" in task, f"{task_id} missing kind"
             assert task["kind"] in valid_kinds, f"{task_id} has invalid kind: {task['kind']}"
