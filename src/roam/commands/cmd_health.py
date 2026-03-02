@@ -150,6 +150,9 @@ _UTILITY_PATH_PATTERNS = (
     "common/",
     "internal/",
     "infra/",
+    "management/commands/",
+    "templatetags/",
+    "migrations/",
 )
 
 _UTILITY_FILE_PATTERNS = (
