@@ -39,6 +39,23 @@ _DJANGO_URL_RE = re.compile(
     r"""url\s*\(\s*r?['"]([^'"]+)['"]\s*,\s*(\w+(?:\.\w+)?)\s*""",
 )
 
+# Python/Django: path('api/', include('myapp.urls'))
+_DJANGO_INCLUDE_RE = re.compile(
+    r"""(?:^|\b)(?:re_)?path\s*\(\s*r?['"]([^'"]*)['"]\s*,\s*include\s*\(\s*['"]([^'"]+)['"]""",
+    re.MULTILINE,
+)
+
+# Python/Django: path('books/', BookDetailView.as_view())
+_DJANGO_AS_VIEW_RE = re.compile(
+    r"""(?:^|\b)(?:re_)?path\s*\(\s*r?['"]([^'"]+)['"]\s*,\s*(\w+)\.as_view\(\)""",
+    re.MULTILINE,
+)
+
+# Python/DRF: router.register(r'users', UserViewSet)
+_DRF_ROUTER_REGISTER_RE = re.compile(
+    r"""(?:\w+)\s*\.\s*register\s*\(\s*r?['"]([^'"]+)['"]\s*,\s*(\w+)""",
+)
+
 # Express.js: app.get('/path', handler), router.post('/path', handler)
 _EXPRESS_RE = re.compile(
     r"""(?:app|router|server)\s*\.\s*(get|post|put|patch|delete|head|options|all|use)\s*\(\s*['"]([^'"]+)['"]\s*""",
@@ -200,6 +217,61 @@ def _scan_python(source: str, file_path: str, rel_path: str) -> list[dict]:
                         "file": rel_path,
                         "line": line,
                         "framework": "django",
+                    }
+                )
+
+    # Django include() delegated URL configs
+    if "include(" in source:
+        for m in _DJANGO_INCLUDE_RE.finditer(source):
+            prefix = m.group(1)
+            module = m.group(2)
+            line = _line_of(source, m.start())
+            path_str = prefix if prefix.startswith("/") else "/" + prefix.lstrip("^").rstrip("$")
+            endpoints.append(
+                {
+                    "method": "INCLUDE",
+                    "path": path_str,
+                    "handler": module,
+                    "file": rel_path,
+                    "line": line,
+                    "framework": "django",
+                }
+            )
+
+    # Django ViewClass.as_view() patterns
+    if ".as_view()" in source:
+        for m in _DJANGO_AS_VIEW_RE.finditer(source):
+            path = m.group(1)
+            view_class = m.group(2)
+            line = _line_of(source, m.start())
+            path_str = path if path.startswith("/") else "/" + path.lstrip("^").rstrip("$")
+            endpoints.append(
+                {
+                    "method": "ANY",
+                    "path": path_str,
+                    "handler": view_class,
+                    "file": rel_path,
+                    "line": line,
+                    "framework": "django",
+                }
+            )
+
+    # DRF router.register() CRUD endpoint synthesis
+    if "register(" in source and ("rest_framework" in source or "DefaultRouter" in source or "SimpleRouter" in source):
+        for m in _DRF_ROUTER_REGISTER_RE.finditer(source):
+            prefix = m.group(1)
+            viewset = m.group(2)
+            line = _line_of(source, m.start())
+            base_path = prefix if prefix.startswith("/") else "/" + prefix.rstrip("/")
+            for method, suffix in [("GET", "/"), ("POST", "/"), ("GET", "/{id}/"), ("PUT", "/{id}/"), ("PATCH", "/{id}/"), ("DELETE", "/{id}/")]:
+                endpoints.append(
+                    {
+                        "method": method,
+                        "path": base_path + suffix,
+                        "handler": viewset,
+                        "file": rel_path,
+                        "line": line,
+                        "framework": "drf",
                     }
                 )
 
