@@ -146,6 +146,8 @@ def ensure_schema(conn: sqlite3.Connection):
 
     # Migrations for columns added after initial schema
     _safe_alter(conn, "symbols", "default_value", "TEXT")
+    # Django framework type tagging (django_model, django_field, etc.)
+    _safe_alter(conn, "symbols", "framework_type", "TEXT")
     _safe_alter(conn, "file_stats", "health_score", "REAL")
     _safe_alter(conn, "file_stats", "cochange_entropy", "REAL")
     _safe_alter(conn, "file_stats", "cognitive_load", "REAL")

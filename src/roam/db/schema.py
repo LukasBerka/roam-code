@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     visibility TEXT DEFAULT 'public',
     is_exported INTEGER DEFAULT 1,
     parent_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
-    default_value TEXT
+    default_value TEXT,
+    framework_type TEXT
 );
 
 CREATE TABLE IF NOT EXISTS edges (

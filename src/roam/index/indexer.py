@@ -429,8 +429,8 @@ def _store_symbols(conn, file_id, rel_path, symbols, all_symbol_rows):
             """INSERT INTO symbols
                (file_id, name, qualified_name, kind, signature,
                 line_start, line_end, docstring, visibility,
-                is_exported, parent_id, default_value)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                is_exported, parent_id, default_value, framework_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 file_id,
                 sym["name"],
@@ -444,6 +444,7 @@ def _store_symbols(conn, file_id, rel_path, symbols, all_symbol_rows):
                 1 if sym["is_exported"] else 0,
                 parent_id,
                 sym.get("default_value"),
+                sym.get("framework_type"),
             ),
         )
         row = conn.execute("SELECT last_insert_rowid()").fetchone()

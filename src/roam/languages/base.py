@@ -74,6 +74,7 @@ class LanguageExtractor(ABC):
         is_exported: bool = False,
         parent_name: str | None = None,
         default_value: str | None = None,
+        framework_type: str | None = None,
     ) -> dict:
         return {
             "name": name,
@@ -87,6 +88,7 @@ class LanguageExtractor(ABC):
             "is_exported": is_exported,
             "parent_name": parent_name,
             "default_value": default_value,
+            "framework_type": framework_type,
         }
 
     def _make_reference(
