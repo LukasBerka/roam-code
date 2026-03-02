@@ -124,6 +124,10 @@ _FRAMEWORK_NAMES = frozenset(
         "from",
         "into",
         "drop",
+        # Django
+        "urlpatterns",
+        "application",
+        "urlconf",
     }
 )
 
