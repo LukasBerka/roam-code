@@ -102,6 +102,7 @@ class PythonExtractor(LanguageExtractor):
         self._pending_django_refs = []
         dunder_all = self._find_dunder_all(tree.root_node, source)
         self._walk_node(tree.root_node, source, file_path, symbols, parent_name=None, dunder_all=dunder_all)
+        self._resolve_transitive_inheritance(symbols)
         return symbols
 
     def extract_references(self, tree, source: bytes, file_path: str) -> list[dict]:
@@ -368,6 +369,55 @@ class PythonExtractor(LanguageExtractor):
         body = node.child_by_field_name("body")
         if body:
             self._walk_node(body, source, file_path, symbols, parent_name=qualified, dunder_all=dunder_all)
+
+    def _resolve_transitive_inheritance(self, symbols: list[dict]) -> None:
+        """Resolve transitive Django model inheritance within a single file.
+
+        Walks the inheritance graph built from _pending_inherits to find classes
+        that transitively inherit from _DJANGO_MODEL_BASES and tags them with
+        framework_type="django_model".
+        """
+        # Build parent map: {class_name: set_of_base_names}
+        parent_map: dict[str, set[str]] = {}
+        for info in self._pending_inherits:
+            parent_map.setdefault(info["class_name"], set()).add(info["base_name"])
+
+        # Build reverse index: {class_name: index_in_symbols} for class symbols
+        class_index: dict[str, int] = {}
+        for idx, sym in enumerate(symbols):
+            if sym["kind"] == "class":
+                class_index[sym["qualified_name"]] = idx
+
+        # Memoization cache for resolved results
+        resolved: dict[str, bool] = {}
+
+        def _is_transitive_django_model(class_name: str, visited: set[str]) -> bool:
+            if class_name in _DJANGO_MODEL_BASES:
+                return True
+            if class_name in resolved:
+                return resolved[class_name]
+            if class_name in visited:
+                return False
+            visited.add(class_name)
+            parents = parent_map.get(class_name, set())
+            result = any(_is_transitive_django_model(p, visited) for p in parents)
+            resolved[class_name] = result
+            return result
+
+        # Tag classes that transitively inherit from Django model bases
+        for class_name, idx in class_index.items():
+            if symbols[idx].get("framework_type"):
+                # Already tagged (direct match) -- record in resolved cache
+                resolved[class_name] = True
+                continue
+            if _is_transitive_django_model(class_name, set()):
+                symbols[idx]["framework_type"] = "django_model"
+
+        # Store for reuse by Plan 02 (custom field resolution)
+        self._inheritance_map = parent_map
+        self._django_model_classes = {
+            name for name, is_model in resolved.items() if is_model
+        }
 
     def _extract_assignment(self, node, source, symbols, dunder_all):
         left = node.child_by_field_name("left")
