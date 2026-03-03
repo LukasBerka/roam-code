@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from .base import LanguageExtractor
 
 # Known Django model field type names
@@ -455,14 +457,18 @@ class PythonExtractor(LanguageExtractor):
                             }
                         )
             else:
-                # Store call function name for deferred custom field resolution
+                # Store call function name for DB-level custom field resolution
                 call_name = self._extract_call_func_name(right, source)
                 if call_name:
-                    sym["_pending_field_call"] = call_name
-                    # Eagerly extract field meta in case this turns out to be a relationship field
-                    sym["_pending_field_meta"] = self._extract_django_field_meta(right, source)
-                    sym["_pending_field_line"] = node.start_point[0] + 1
-                    sym["_pending_field_parent"] = parent_name
+                    sym["call_function"] = call_name
+                    # Eagerly extract field meta in case this is a custom relationship field
+                    meta = self._extract_django_field_meta(right, source)
+                    # Store as JSON for DB-level resolution
+                    meta_filtered = {
+                        k: v for k, v in meta.items() if v is not None
+                    }
+                    if meta_filtered:
+                        sym["field_metadata"] = json.dumps(meta_filtered)
 
         # Handle Meta inner class attributes
         if parent_name and parent_name.endswith(".Meta"):
