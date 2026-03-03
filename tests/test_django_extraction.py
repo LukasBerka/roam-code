@@ -394,3 +394,54 @@ class TestIntegratedDjango:
         # Meta fields extraction
         fields_sym = _find_sym(syms, "fields", parent="ArticleSerializer.Meta")
         assert fields_sym["meta_fields"] == ["title", "body", "author"]
+
+
+# ===========================================================================
+# 6. Transitive Inheritance Edge Cases
+# ===========================================================================
+
+
+class TestTransitiveEdgeCases:
+    """Edge case tests for transitive inheritance resolution."""
+
+    def test_diamond_inheritance(self):
+        """Both branches of a diamond lead to models.Model; all classes tagged."""
+        src = (
+            "class Base(models.Model):\n"
+            "    pass\n"
+            "class Left(Base):\n"
+            "    pass\n"
+            "class Right(Base):\n"
+            "    pass\n"
+            "class Diamond(Left, Right):\n"
+            "    pass\n"
+        )
+        syms, _ = _parse_py(src)
+        assert _find_sym(syms, "Base").get("framework_type") == "django_model"
+        assert _find_sym(syms, "Left").get("framework_type") == "django_model"
+        assert _find_sym(syms, "Right").get("framework_type") == "django_model"
+        assert _find_sym(syms, "Diamond").get("framework_type") == "django_model"
+
+    def test_abstract_base_transitive(self):
+        """AbstractUser is in _DJANGO_MODEL_BASES; descendants are tagged."""
+        src = (
+            "class CustomUser(AbstractUser):\n"
+            "    pass\n"
+            "class ProxyUser(CustomUser):\n"
+            "    pass\n"
+        )
+        syms, _ = _parse_py(src)
+        assert _find_sym(syms, "CustomUser").get("framework_type") == "django_model"
+        assert _find_sym(syms, "ProxyUser").get("framework_type") == "django_model"
+
+    def test_class_definition_order_independent(self):
+        """Child defined BEFORE parent; both still tagged after transitive resolution."""
+        src = (
+            "class Child(Parent):\n"
+            "    pass\n"
+            "class Parent(models.Model):\n"
+            "    pass\n"
+        )
+        syms, _ = _parse_py(src)
+        assert _find_sym(syms, "Parent").get("framework_type") == "django_model"
+        assert _find_sym(syms, "Child").get("framework_type") == "django_model"
