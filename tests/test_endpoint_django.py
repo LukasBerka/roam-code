@@ -6,11 +6,21 @@ Covers:
 - DRF router.register() CRUD endpoint synthesis
 - No false positives on non-Django files
 - Basic path() regression test
+- Handler .as_view suffix cleanup
+- Full URL path resolution via _resolve_django_includes
+- Nested include() chain resolution
+- include() expansion into child endpoints
 """
 
 from __future__ import annotations
 
-from roam.commands.cmd_endpoints import _scan_python
+from pathlib import Path
+
+from roam.commands.cmd_endpoints import (
+    _join_url_paths,
+    _resolve_django_includes,
+    _scan_python,
+)
 
 
 class TestDjangoEndpointPatterns:
@@ -85,3 +95,233 @@ class TestDjangoEndpointPatterns:
         path_eps = [e for e in endpoints if e["framework"] == "django" and e["path"] == "/books/"]
         assert len(path_eps) >= 1
         assert path_eps[0]["handler"] == "views.book_list"
+
+
+class TestHandlerAsViewCleanup:
+    """Test that .as_view suffix is never present in handler names."""
+
+    def test_handler_no_as_view_suffix(self):
+        """path('books/', BookView.as_view()) produces handler 'BookView', not 'BookView.as_view'."""
+        source = (
+            "from django.urls import path\n"
+            "from myapp.views import BookView\n"
+            "urlpatterns = [\n"
+            "    path('books/', BookView.as_view()),\n"
+            "]\n"
+        )
+        endpoints = _scan_python(source, "/fake/urls.py", "urls.py")
+        for ep in endpoints:
+            assert not ep["handler"].endswith(".as_view"), (
+                f"Handler {ep['handler']!r} still has .as_view suffix"
+            )
+        # Verify the CBV was detected with the clean class name
+        cbv_eps = [e for e in endpoints if e["handler"] == "BookView"]
+        assert len(cbv_eps) >= 1
+
+    def test_multiple_as_view_handlers_all_clean(self):
+        """Multiple CBV patterns all produce clean handler names."""
+        source = (
+            "from django.urls import path\n"
+            "from myapp.views import BookView, AuthorView\n"
+            "urlpatterns = [\n"
+            "    path('books/', BookView.as_view()),\n"
+            "    path('authors/', AuthorView.as_view()),\n"
+            "]\n"
+        )
+        endpoints = _scan_python(source, "/fake/urls.py", "urls.py")
+        handlers = [e["handler"] for e in endpoints]
+        assert "BookView" in handlers
+        assert "AuthorView" in handlers
+        assert all(".as_view" not in h for h in handlers)
+
+
+class TestJoinUrlPaths:
+    """Test the URL path joining helper."""
+
+    def test_simple_join(self):
+        assert _join_url_paths("/api/", "/books/") == "/api/books/"
+
+    def test_no_double_slash(self):
+        assert _join_url_paths("/api/", "/books/") == "/api/books/"
+        assert _join_url_paths("/api", "books/") == "/api/books/"
+
+    def test_ensures_leading_slash(self):
+        assert _join_url_paths("api/", "books/") == "/api/books/"
+
+    def test_empty_prefix(self):
+        assert _join_url_paths("/", "/books/") == "/books/"
+
+    def test_nested_paths(self):
+        assert _join_url_paths("/api/v1/", "/users/") == "/api/v1/users/"
+
+
+class TestResolveDjangoIncludes:
+    """Test _resolve_django_includes for full path resolution."""
+
+    def test_full_path_with_include(self):
+        """Root include('myapp.urls') with prefix /api/ resolves child /books/ to /api/books/."""
+        # Simulate endpoints from scanning two files:
+        # Root urls.py: path('api/', include('myapp.urls'))
+        # myapp/urls.py: path('books/', views.book_list)
+        endpoints = [
+            {
+                "method": "INCLUDE",
+                "path": "/api/",
+                "handler": "myapp.urls",
+                "file": "urls.py",
+                "line": 3,
+                "framework": "django",
+            },
+            {
+                "method": "ANY",
+                "path": "/books/",
+                "handler": "views.book_list",
+                "file": "myapp/urls.py",
+                "line": 3,
+                "framework": "django",
+            },
+        ]
+        file_paths = ["urls.py", "myapp/urls.py"]
+        result = _resolve_django_includes(endpoints, Path("/fake"), file_paths)
+
+        # The original child endpoint with partial path should be present
+        partial = [e for e in result if e["path"] == "/books/" and e["method"] == "ANY"]
+        assert len(partial) == 1
+
+        # An expanded endpoint with full path should also be present
+        full = [e for e in result if e["path"] == "/api/books/" and e["method"] == "ANY"]
+        assert len(full) == 1
+        assert full[0]["handler"] == "views.book_list"
+
+        # The INCLUDE entry should be kept as a group marker
+        group_markers = [e for e in result if e.get("group") == "myapp.urls"]
+        assert len(group_markers) == 1
+
+    def test_nested_include_full_path(self):
+        """Three-level include chain: root -> api -> myapp produces correct full paths."""
+        endpoints = [
+            # Root: path('v1/', include('api.urls'))
+            {
+                "method": "INCLUDE",
+                "path": "/v1/",
+                "handler": "api.urls",
+                "file": "urls.py",
+                "line": 3,
+                "framework": "django",
+            },
+            # api/urls.py: path('resources/', include('myapp.urls'))
+            {
+                "method": "INCLUDE",
+                "path": "/resources/",
+                "handler": "myapp.urls",
+                "file": "api/urls.py",
+                "line": 3,
+                "framework": "django",
+            },
+            # myapp/urls.py: path('books/', views.book_list)
+            {
+                "method": "ANY",
+                "path": "/books/",
+                "handler": "views.book_list",
+                "file": "myapp/urls.py",
+                "line": 3,
+                "framework": "django",
+            },
+        ]
+        file_paths = ["urls.py", "api/urls.py", "myapp/urls.py"]
+        result = _resolve_django_includes(endpoints, Path("/fake"), file_paths)
+
+        # Should have the fully resolved path: /v1/resources/books/
+        full = [e for e in result if e["path"] == "/v1/resources/books/"]
+        assert len(full) == 1
+        assert full[0]["handler"] == "views.book_list"
+
+    def test_include_expanded_to_children(self):
+        """INCLUDE entries are expanded and child endpoints appear with full paths."""
+        endpoints = [
+            {
+                "method": "INCLUDE",
+                "path": "/api/",
+                "handler": "myapp.urls",
+                "file": "urls.py",
+                "line": 3,
+                "framework": "django",
+            },
+            {
+                "method": "ANY",
+                "path": "/books/",
+                "handler": "views.book_list",
+                "file": "myapp/urls.py",
+                "line": 3,
+                "framework": "django",
+            },
+            {
+                "method": "ANY",
+                "path": "/authors/",
+                "handler": "views.author_list",
+                "file": "myapp/urls.py",
+                "line": 5,
+                "framework": "django",
+            },
+        ]
+        file_paths = ["urls.py", "myapp/urls.py"]
+        result = _resolve_django_includes(endpoints, Path("/fake"), file_paths)
+
+        # Both child endpoints should be expanded with full paths
+        expanded_paths = [e["path"] for e in result if e["method"] == "ANY"]
+        assert "/api/books/" in expanded_paths
+        assert "/api/authors/" in expanded_paths
+
+    def test_unresolvable_include_kept_as_group(self):
+        """Include referencing a module not in file_paths is kept as a group marker."""
+        endpoints = [
+            {
+                "method": "INCLUDE",
+                "path": "/api/",
+                "handler": "unknown.urls",
+                "file": "urls.py",
+                "line": 3,
+                "framework": "django",
+            },
+        ]
+        file_paths = ["urls.py"]
+        result = _resolve_django_includes(endpoints, Path("/fake"), file_paths)
+
+        # Should have the group marker but no expanded children
+        group_markers = [e for e in result if e.get("group") == "unknown.urls"]
+        assert len(group_markers) == 1
+        non_include = [e for e in result if e["method"] != "INCLUDE"]
+        assert len(non_include) == 0
+
+    def test_depth_limit_prevents_infinite_loop(self):
+        """Circular or deep includes stop at depth 5."""
+        # Create a chain of 7 includes -- only first 5 should be expanded
+        endpoints = []
+        file_paths = []
+        for i in range(7):
+            file_paths.append(f"level{i}/urls.py")
+            if i < 6:
+                endpoints.append({
+                    "method": "INCLUDE",
+                    "path": f"/l{i}/",
+                    "handler": f"level{i + 1}.urls",
+                    "file": f"level{i}/urls.py",
+                    "line": 3,
+                    "framework": "django",
+                })
+        # Leaf endpoint at level 6
+        endpoints.append({
+            "method": "ANY",
+            "path": "/leaf/",
+            "handler": "views.leaf",
+            "file": "level6/urls.py",
+            "line": 3,
+            "framework": "django",
+        })
+
+        result = _resolve_django_includes(endpoints, Path("/fake"), file_paths)
+
+        # The leaf should NOT be expanded from level0 because depth >= 5
+        # level0 -> level1 -> level2 -> level3 -> level4 -> level5 -> level6 (depth 6)
+        fully_expanded = [e for e in result if "l0" in e["path"] and e["method"] == "ANY"]
+        assert len(fully_expanded) == 0
