@@ -307,3 +307,64 @@ class TestCycleDetection:
             ).fetchone()
             assert row["framework_type"] is None
         conn.close()
+
+
+# ===========================================================================
+# 8. External Parent DRF Detection (fast-path in python_lang.py)
+# ===========================================================================
+
+
+def _parse_py(source_text: str, file_path: str = "example.py"):
+    """Parse Python source and return extracted symbols."""
+    from tree_sitter_language_pack import get_parser
+
+    from roam.index.parser import GRAMMAR_ALIASES
+    from roam.languages.registry import get_extractor
+
+    grammar = GRAMMAR_ALIASES.get("python", "python")
+    parser = get_parser(grammar)
+    source = source_text.encode("utf-8")
+    tree = parser.parse(source)
+
+    extractor = get_extractor("python")
+    symbols = extractor.extract_symbols(tree, source, file_path)
+    return symbols
+
+
+class TestExternalParentDRFDetection:
+    """Test fast-path DRF detection in python_lang.py _extract_class.
+
+    These tests verify that classes directly inheriting from external
+    (unindexed) DRF base classes get framework_type='drf_view' during
+    extraction, without needing DB-level transitive resolution.
+    """
+
+    def test_external_apiview_direct_inheritance(self):
+        """class BookImportView(APIView): pass -- tagged as drf_view."""
+        symbols = _parse_py("class BookImportView(APIView): pass")
+        cls = [s for s in symbols if s["name"] == "BookImportView"][0]
+        assert cls["framework_type"] == "drf_view"
+
+    def test_external_modelviewset_inheritance(self):
+        """class UserViewSet(ModelViewSet): pass -- tagged as drf_view."""
+        symbols = _parse_py("class UserViewSet(ModelViewSet): pass")
+        cls = [s for s in symbols if s["name"] == "UserViewSet"][0]
+        assert cls["framework_type"] == "drf_view"
+
+    def test_external_drf_with_attribute_syntax(self):
+        """class MyView(rest_framework.views.APIView): pass -- tagged as drf_view."""
+        symbols = _parse_py("class MyView(rest_framework.views.APIView): pass")
+        cls = [s for s in symbols if s["name"] == "MyView"][0]
+        assert cls["framework_type"] == "drf_view"
+
+    def test_django_model_not_overwritten_by_drf(self):
+        """class HybridView(Model, APIView): pass -- django_model takes precedence."""
+        symbols = _parse_py("class HybridView(Model, APIView): pass")
+        cls = [s for s in symbols if s["name"] == "HybridView"][0]
+        assert cls["framework_type"] == "django_model"
+
+    def test_non_drf_class_not_tagged(self):
+        """class MyService(BaseService): pass -- NOT tagged as drf_view."""
+        symbols = _parse_py("class MyService(BaseService): pass")
+        cls = [s for s in symbols if s["name"] == "MyService"][0]
+        assert cls.get("framework_type") is None
