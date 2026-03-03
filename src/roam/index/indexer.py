@@ -115,6 +115,16 @@ def _try_import_taint():
         return None
 
 
+def _try_import_django_post():
+    """Try to import Django post-indexing module."""
+    try:
+        from roam.index.django_post import resolve_all_django
+
+        return resolve_all_django
+    except ImportError:
+        return None
+
+
 _quiet_mode = False
 
 
@@ -1070,6 +1080,15 @@ class Indexer:
                     self._log(f"  Graph metrics failed: {e}")
             else:
                 self._log("Skipping graph metrics (module not available)")
+
+            # Django cross-file inheritance resolution
+            _django_post_fn = _try_import_django_post()
+            if _django_post_fn is not None:
+                self._log("Resolving Django inheritance...")
+                try:
+                    _django_post_fn(conn, quiet=self._quiet)
+                except Exception as e:
+                    self._log(f"  Django inheritance resolution failed: {e}")
 
             # Git history
             analyze_git = _try_import_git_stats()
