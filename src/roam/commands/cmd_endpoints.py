@@ -208,7 +208,8 @@ def _scan_python(source: str, file_path: str, rel_path: str) -> list[dict]:
             path = m.group(1)
             handler = m.group(2)
             # Skip .as_view patterns -- _DJANGO_AS_VIEW_RE handles CBV detection
-            if handler.endswith(".as_view"):
+            # Also skip module-prefixed .as_view (e.g., views.BookView.as_view())
+            if handler.endswith(".as_view") or source[m.end():m.end() + 10].startswith(".as_view"):
                 continue
             line = _line_of(source, m.start())
             # Only report if it looks like an actual URL pattern
