@@ -9,50 +9,17 @@ Covers:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Helpers (same pattern as test_django_extraction.py)
-# ---------------------------------------------------------------------------
-
-
-def _parse_py(source_text: str, file_path: str = "example.py"):
-    """Parse Python source and return (symbols, references)."""
-    from tree_sitter_language_pack import get_parser
-
-    from roam.index.parser import GRAMMAR_ALIASES
-    from roam.languages.registry import get_extractor
-
-    grammar = GRAMMAR_ALIASES.get("python", "python")
-    parser = get_parser(grammar)
-    source = source_text.encode("utf-8")
-    tree = parser.parse(source)
-
-    extractor = get_extractor("python")
-    symbols = extractor.extract_symbols(tree, source, file_path)
-    references = extractor.extract_references(tree, source, file_path)
-    return symbols, references
-
-
-def _find_sym(symbols, name, parent=None):
-    """Find a single symbol by name and optional parent."""
-    for s in symbols:
-        if s["name"] == name:
-            if parent is not None and s.get("parent_name") != parent:
-                continue
-            return s
-    return None
-
-
-def _ref_targets(refs, kind=None, source_name=None):
-    """Get reference target_names, optionally filtered by kind and/or source_name."""
-    result = []
-    for r in refs:
-        if kind and r["kind"] != kind:
-            continue
-        if source_name is not None and r.get("source_name") != source_name:
-            continue
-        result.append(r["target_name"])
-    return result
+sys.path.insert(0, str(Path(__file__).parent))
+from conftest import (
+    find_sym as _find_sym,
+    make_django_db,
+    parse_py as _parse_py,
+    populate_django_db,
+    ref_targets as _ref_targets,
+)
 
 
 def _parse_py_resolved(source_text: str, file_path: str = "example.py"):
@@ -62,7 +29,6 @@ def _parse_py_resolved(source_text: str, file_path: str = "example.py"):
     resolution results and db_edges contains edges created by DB resolution.
     """
     import json
-    import sqlite3
 
     from roam.index.django_post import (
         resolve_django_custom_fields,
@@ -72,96 +38,8 @@ def _parse_py_resolved(source_text: str, file_path: str = "example.py"):
 
     symbols, references = _parse_py(source_text, file_path)
 
-    # Create in-memory DB with minimal schema
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("""CREATE TABLE symbols (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        file_id INTEGER DEFAULT 1,
-        name TEXT NOT NULL,
-        qualified_name TEXT,
-        kind TEXT NOT NULL,
-        signature TEXT,
-        line_start INTEGER,
-        line_end INTEGER,
-        docstring TEXT,
-        visibility TEXT DEFAULT 'public',
-        is_exported INTEGER DEFAULT 1,
-        parent_id INTEGER,
-        default_value TEXT,
-        framework_type TEXT,
-        call_function TEXT,
-        field_type TEXT,
-        field_base_type TEXT,
-        field_metadata TEXT
-    )""")
-    conn.execute("""CREATE TABLE edges (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_id INTEGER,
-        target_id INTEGER,
-        kind TEXT,
-        line INTEGER,
-        source_file_id INTEGER
-    )""")
-
-    # Insert symbols
-    sym_id_map = {}  # name -> id
-    for sym in symbols:
-        # Support both old (_pending_field_call) and new (call_function) field names
-        call_function = sym.get("call_function") or sym.get("_pending_field_call")
-        field_metadata = sym.get("field_metadata")
-        if not field_metadata and sym.get("_pending_field_meta"):
-            meta = sym["_pending_field_meta"]
-            meta_filtered = {k: v for k, v in meta.items() if v is not None}
-            if meta_filtered:
-                field_metadata = json.dumps(meta_filtered)
-
-        conn.execute(
-            """INSERT INTO symbols
-               (name, qualified_name, kind, signature, line_start, line_end,
-                docstring, visibility, is_exported, default_value,
-                framework_type, call_function, field_type, field_base_type,
-                field_metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                sym["name"], sym["qualified_name"], sym["kind"],
-                sym["signature"], sym["line_start"], sym["line_end"],
-                sym["docstring"], sym["visibility"],
-                1 if sym["is_exported"] else 0,
-                sym.get("default_value"), sym.get("framework_type"),
-                call_function, sym.get("field_type"),
-                sym.get("field_base_type"), field_metadata,
-            ),
-        )
-        row = conn.execute("SELECT last_insert_rowid()").fetchone()
-        sym_id_map[sym["qualified_name"] or sym["name"]] = row[0]
-        if sym["name"] not in sym_id_map:
-            sym_id_map[sym["name"]] = row[0]
-
-    # Set parent_id for nested symbols
-    for sym in symbols:
-        if sym.get("parent_name"):
-            parent_id = sym_id_map.get(sym["parent_name"])
-            sym_id = sym_id_map.get(sym["qualified_name"] or sym["name"])
-            if parent_id and sym_id:
-                conn.execute(
-                    "UPDATE symbols SET parent_id = ? WHERE id = ?",
-                    (parent_id, sym_id),
-                )
-
-    # Insert inherits edges from references
-    for ref in references:
-        if ref["kind"] == "inherits":
-            source_id = sym_id_map.get(ref.get("source_name"))
-            target_id = sym_id_map.get(ref.get("target_name"))
-            if source_id and target_id:
-                conn.execute(
-                    "INSERT INTO edges (source_id, target_id, kind, line, source_file_id) "
-                    "VALUES (?, ?, 'inherits', ?, 1)",
-                    (source_id, target_id, ref.get("line", 0)),
-                )
-
-    conn.commit()
+    conn = make_django_db()
+    populate_django_db(conn, symbols, references)
 
     # Count edges before resolution to identify new ones
     pre_edge_count = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]

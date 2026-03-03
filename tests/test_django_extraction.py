@@ -9,103 +9,25 @@ Covers:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Helpers (same pattern as test_python_extractor_v2.py)
-# ---------------------------------------------------------------------------
-
-
-def _parse_py(source_text: str, file_path: str = "example.py"):
-    """Parse Python source and return (symbols, references)."""
-    from tree_sitter_language_pack import get_parser
-
-    from roam.index.parser import GRAMMAR_ALIASES
-    from roam.languages.registry import get_extractor
-
-    grammar = GRAMMAR_ALIASES.get("python", "python")
-    parser = get_parser(grammar)
-    source = source_text.encode("utf-8")
-    tree = parser.parse(source)
-
-    extractor = get_extractor("python")
-    symbols = extractor.extract_symbols(tree, source, file_path)
-    references = extractor.extract_references(tree, source, file_path)
-    return symbols, references
-
-
-def _sym_names(symbols, kind=None, parent=None):
-    """Get symbol names, optionally filtered by kind and/or parent."""
-    result = []
-    for s in symbols:
-        if kind and s["kind"] != kind:
-            continue
-        if parent is not None and s.get("parent_name") != parent:
-            continue
-        result.append(s["name"])
-    return result
-
-
-def _ref_targets(refs, kind=None, source_name=None):
-    """Get reference target_names, optionally filtered by kind and/or source_name."""
-    result = []
-    for r in refs:
-        if kind and r["kind"] != kind:
-            continue
-        if source_name is not None and r.get("source_name") != source_name:
-            continue
-        result.append(r["target_name"])
-    return result
+sys.path.insert(0, str(Path(__file__).parent))
+from conftest import find_sym as _find_sym, make_django_db, parse_py as _parse_py, ref_targets as _ref_targets, sym_names as _sym_names
 
 
 def _parse_py_resolved(source_text: str, file_path: str = "example.py"):
-    """Parse Python source with DB-level Django resolution.
-
-    Returns (symbols, references) where symbols include transitive
-    inheritance resolution results from django_post.
-    """
-    import sqlite3
-
+    """Parse Python source with DB-level Django resolution (inheritance only)."""
     from roam.index.django_post import resolve_django_inheritance
 
     symbols, references = _parse_py(source_text, file_path)
-
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("""CREATE TABLE symbols (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        file_id INTEGER DEFAULT 1,
-        name TEXT NOT NULL,
-        qualified_name TEXT,
-        kind TEXT NOT NULL,
-        signature TEXT,
-        line_start INTEGER,
-        line_end INTEGER,
-        docstring TEXT,
-        visibility TEXT DEFAULT 'public',
-        is_exported INTEGER DEFAULT 1,
-        parent_id INTEGER,
-        default_value TEXT,
-        framework_type TEXT,
-        call_function TEXT,
-        field_type TEXT,
-        field_base_type TEXT,
-        field_metadata TEXT
-    )""")
-    conn.execute("""CREATE TABLE edges (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_id INTEGER,
-        target_id INTEGER,
-        kind TEXT,
-        line INTEGER,
-        source_file_id INTEGER
-    )""")
+    conn = make_django_db()
 
     sym_id_map = {}
     for sym in symbols:
         conn.execute(
-            """INSERT INTO symbols
-               (name, qualified_name, kind, framework_type)
-               VALUES (?, ?, ?, ?)""",
+            "INSERT INTO symbols (name, qualified_name, kind, framework_type) "
+            "VALUES (?, ?, ?, ?)",
             (sym["name"], sym["qualified_name"], sym["kind"],
              sym.get("framework_type")),
         )
@@ -131,23 +53,12 @@ def _parse_py_resolved(source_text: str, file_path: str = "example.py"):
     rows = conn.execute(
         "SELECT id, name, framework_type FROM symbols ORDER BY id"
     ).fetchall()
-
     for i, row in enumerate(rows):
         if i < len(symbols):
             symbols[i]["framework_type"] = row["framework_type"]
 
     conn.close()
     return symbols, references
-
-
-def _find_sym(symbols, name, parent=None):
-    """Find a single symbol by name and optional parent."""
-    for s in symbols:
-        if s["name"] == name:
-            if parent is not None and s.get("parent_name") != parent:
-                continue
-            return s
-    return None
 
 
 # ===========================================================================
