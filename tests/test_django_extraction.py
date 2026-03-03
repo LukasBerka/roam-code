@@ -498,3 +498,50 @@ class TestTransitiveEdgeCases:
         assert _find_sym(syms, "Service").get("framework_type") is None
         assert _find_sym(syms, "BaseService").get("framework_type") is None
         assert _find_sym(syms, "MyModel").get("framework_type") == "django_model"
+
+    def test_mixin_not_tagged_unless_model_ancestor(self):
+        """A mixin class with no Model ancestor is not tagged."""
+        src = (
+            "class TimestampMixin:\n"
+            "    pass\n"
+            "class MyModel(TimestampMixin, models.Model):\n"
+            "    pass\n"
+        )
+        syms, _ = _parse_py(src)
+        assert _find_sym(syms, "TimestampMixin").get("framework_type") is None
+        assert _find_sym(syms, "MyModel").get("framework_type") == "django_model"
+
+    def test_mixin_chain_with_model(self):
+        """Mixin mixed with Model base; model tagged, mixin not."""
+        src = (
+            "class Base(models.Model):\n"
+            "    pass\n"
+            "class AuditMixin:\n"
+            "    pass\n"
+            "class MyModel(AuditMixin, Base):\n"
+            "    pass\n"
+        )
+        syms, _ = _parse_py(src)
+        assert _find_sym(syms, "MyModel").get("framework_type") == "django_model"
+        assert _find_sym(syms, "AuditMixin").get("framework_type") is None
+
+    def test_multiple_files_independent(self):
+        """Separate _parse_py calls do not share inheritance state."""
+        src_a = (
+            "class Base(models.Model):\n"
+            "    pass\n"
+            "class Child(Base):\n"
+            "    pass\n"
+        )
+        src_b = (
+            "class Child(SomeOther):\n"
+            "    pass\n"
+            "class SomeOther:\n"
+            "    pass\n"
+        )
+        syms_a, _ = _parse_py(src_a)
+        syms_b, _ = _parse_py(src_b)
+        # First file: Child is a Django model (inherits Base -> models.Model)
+        assert _find_sym(syms_a, "Child").get("framework_type") == "django_model"
+        # Second file: Child is NOT a Django model (no Django ancestors)
+        assert _find_sym(syms_b, "Child").get("framework_type") is None
