@@ -8,6 +8,7 @@ and field metadata for Django models and custom fields.
 from __future__ import annotations
 
 import json
+import sys
 
 # Duplicated from python_lang.py to avoid circular imports.
 # These are stable constants unlikely to diverge.
@@ -268,3 +269,25 @@ def resolve_django_custom_fields(conn) -> int:
             )
 
     return len(updates)
+
+
+def _log(msg: str):
+    """Log to stderr."""
+    sys.stderr.write(f"{msg}\n")
+    sys.stderr.flush()
+
+
+def resolve_all_django(conn, quiet: bool = False) -> dict:
+    """Run all Django post-indexing resolution steps.
+
+    Returns a dict with counts of updated symbols.
+    """
+    model_count = resolve_django_inheritance(conn)
+    if not quiet and model_count:
+        _log(f"  Django model inheritance: {model_count} symbols updated")
+
+    field_count = resolve_django_custom_fields(conn)
+    if not quiet and field_count:
+        _log(f"  Django custom fields: {field_count} symbols updated")
+
+    return {"models_updated": model_count, "fields_updated": field_count}
