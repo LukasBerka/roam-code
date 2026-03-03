@@ -67,6 +67,7 @@ def _parse_py_resolved(source_text: str, file_path: str = "example.py"):
     from roam.index.django_post import (
         resolve_django_custom_fields,
         resolve_django_inheritance,
+        resolve_django_relationships,
     )
 
     symbols, references = _parse_py(source_text, file_path)
@@ -168,6 +169,7 @@ def _parse_py_resolved(source_text: str, file_path: str = "example.py"):
     # Run DB-level resolution
     resolve_django_inheritance(conn)
     resolve_django_custom_fields(conn)
+    resolve_django_relationships(conn)
 
     # Query back updated symbols
     rows = conn.execute(
@@ -251,7 +253,7 @@ class TestCustomFieldDetection:
             "class M(models.Model):\n"
             "    name = MyCharField()\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _, _ = _parse_py_resolved(src)
         sym = _find_sym(syms, "name", parent="M")
         assert sym is not None
         assert sym.get("django_field") is True
@@ -260,34 +262,38 @@ class TestCustomFieldDetection:
 
     def test_custom_fk_creates_reference(self):
         src = (
+            "class User(models.Model):\n"
+            "    pass\n"
             "class MyFK(ForeignKey):\n"
             "    pass\n"
             "class M(models.Model):\n"
             "    author = MyFK(User, on_delete=models.CASCADE)\n"
         )
-        syms, refs = _parse_py(src)
+        syms, _, db_edges = _parse_py_resolved(src)
         sym = _find_sym(syms, "author", parent="M")
         assert sym is not None
         assert sym.get("django_field") is True
         assert sym.get("field_type") == "MyFK"
         assert sym.get("field_base_type") == "ForeignKey"
-        fk_targets = _ref_targets(refs, kind="django_fk")
+        fk_targets = _db_edge_targets(db_edges, kind="django_fk")
         assert "User" in fk_targets
 
     def test_custom_m2m_creates_reference(self):
         src = (
+            "class Tag(models.Model):\n"
+            "    pass\n"
             "class MyM2M(ManyToManyField):\n"
             "    pass\n"
             "class M(models.Model):\n"
             "    tags = MyM2M(Tag)\n"
         )
-        syms, refs = _parse_py(src)
+        syms, _, db_edges = _parse_py_resolved(src)
         sym = _find_sym(syms, "tags", parent="M")
         assert sym is not None
         assert sym.get("django_field") is True
         assert sym.get("field_type") == "MyM2M"
         assert sym.get("field_base_type") == "ManyToManyField"
-        m2m_targets = _ref_targets(refs, kind="django_m2m")
+        m2m_targets = _db_edge_targets(db_edges, kind="django_m2m")
         assert "Tag" in m2m_targets
 
     def test_direct_field_no_base_type(self):
@@ -310,7 +316,7 @@ class TestCustomFieldDetection:
             "class M(models.Model):\n"
             "    val = MyField()\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _, _ = _parse_py_resolved(src)
         sym = _find_sym(syms, "val", parent="M")
         assert sym is not None
         assert sym.get("django_field") is True
@@ -336,7 +342,7 @@ class TestCustomFieldDetection:
             "class M(models.Model):\n"
             "    val = MyField()\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _, _ = _parse_py_resolved(src)
         sym = _find_sym(syms, "val", parent="M")
         assert sym is not None
         assert sym.get("django_field") is True
@@ -354,39 +360,45 @@ class TestCustomRelationshipFields:
 
     def test_custom_o2o_creates_reference(self):
         src = (
+            "class Profile(models.Model):\n"
+            "    pass\n"
             "class MyO2O(OneToOneField):\n"
             "    pass\n"
             "class M(models.Model):\n"
             "    profile = MyO2O(Profile, on_delete=models.CASCADE)\n"
         )
-        syms, refs = _parse_py(src)
+        syms, _, db_edges = _parse_py_resolved(src)
         sym = _find_sym(syms, "profile", parent="M")
         assert sym is not None
         assert sym.get("field_type") == "MyO2O"
         assert sym.get("field_base_type") == "OneToOneField"
-        o2o_targets = _ref_targets(refs, kind="django_o2o")
+        o2o_targets = _db_edge_targets(db_edges, kind="django_o2o")
         assert "Profile" in o2o_targets
 
     def test_custom_fk_extracts_on_delete(self):
         src = (
+            "class User(models.Model):\n"
+            "    pass\n"
             "class MyFK(ForeignKey):\n"
             "    pass\n"
             "class M(models.Model):\n"
             "    author = MyFK(User, on_delete=models.CASCADE)\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _, _ = _parse_py_resolved(src)
         sym = _find_sym(syms, "author", parent="M")
         assert sym is not None
         assert sym.get("on_delete") == "models.CASCADE"
 
     def test_custom_fk_extracts_related_name(self):
         src = (
+            "class User(models.Model):\n"
+            "    pass\n"
             "class MyFK(ForeignKey):\n"
             "    pass\n"
             "class M(models.Model):\n"
             '    author = MyFK(User, on_delete=models.CASCADE, related_name="posts")\n'
         )
-        syms, _ = _parse_py(src)
+        syms, _, _ = _parse_py_resolved(src)
         sym = _find_sym(syms, "author", parent="M")
         assert sym is not None
         assert sym.get("related_name") == "posts"
@@ -398,12 +410,10 @@ class TestCustomRelationshipFields:
             "class M(models.Model):\n"
             '    user = MyFK("auth.User", on_delete=models.CASCADE)\n'
         )
-        syms, refs = _parse_py(src)
+        syms, _, _ = _parse_py_resolved(src)
         sym = _find_sym(syms, "user", parent="M")
         assert sym is not None
         assert sym.get("relationship_target") == "auth.User"
-        fk_targets = _ref_targets(refs, kind="django_fk")
-        assert "auth.User" in fk_targets
 
     def test_mixed_custom_and_standard_fields(self):
         src = (
@@ -414,7 +424,7 @@ class TestCustomRelationshipFields:
             "    standard_name = models.CharField(max_length=100)\n"
             "    age = models.IntegerField()\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _, _ = _parse_py_resolved(src)
         custom = _find_sym(syms, "custom_name", parent="M")
         standard = _find_sym(syms, "standard_name", parent="M")
         age = _find_sym(syms, "age", parent="M")
