@@ -102,8 +102,6 @@ class PythonExtractor(LanguageExtractor):
         self._pending_django_refs = []
         dunder_all = self._find_dunder_all(tree.root_node, source)
         self._walk_node(tree.root_node, source, file_path, symbols, parent_name=None, dunder_all=dunder_all)
-        self._resolve_transitive_inheritance(symbols)
-        self._resolve_custom_fields(symbols)
         return symbols
 
     def extract_references(self, tree, source: bytes, file_path: str) -> list[dict]:
