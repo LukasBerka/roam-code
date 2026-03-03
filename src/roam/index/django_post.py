@@ -495,6 +495,10 @@ def resolve_all_django(conn, quiet: bool = False) -> dict:
     if not quiet and field_count:
         _log(f"  Django custom fields: {field_count} symbols updated")
 
+    drf_count = resolve_drf_views(conn)
+    if not quiet and drf_count:
+        _log(f"  DRF view detection: {drf_count} symbols updated")
+
     new_rels, total_rels = resolve_django_relationships(conn)
     if not quiet and total_rels:
         _log(f"  Django relationships: {total_rels} edges ({new_rels} new)")
@@ -502,6 +506,7 @@ def resolve_all_django(conn, quiet: bool = False) -> dict:
     return {
         "models_updated": model_count,
         "fields_updated": field_count,
+        "drf_views_updated": drf_count,
         "relationships_created": new_rels,
         "relationships_total": total_rels,
     }
