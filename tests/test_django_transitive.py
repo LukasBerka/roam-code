@@ -67,6 +67,163 @@ def _find_sym(symbols, name, parent=None):
     return None
 
 
+def _parse_py_resolved(source_text: str, file_path: str = "example.py"):
+    """Parse Python source with DB-level Django resolution.
+
+    Returns (symbols, references) where symbols include cross-file
+    resolution results (framework_type, field_type, field_base_type).
+    """
+    import json
+    import sqlite3
+
+    from roam.index.django_post import (
+        resolve_django_custom_fields,
+        resolve_django_inheritance,
+    )
+
+    symbols, references = _parse_py(source_text, file_path)
+
+    # Create in-memory DB with minimal schema
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("""CREATE TABLE symbols (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_id INTEGER DEFAULT 1,
+        name TEXT NOT NULL,
+        qualified_name TEXT,
+        kind TEXT NOT NULL,
+        signature TEXT,
+        line_start INTEGER,
+        line_end INTEGER,
+        docstring TEXT,
+        visibility TEXT DEFAULT 'public',
+        is_exported INTEGER DEFAULT 1,
+        parent_id INTEGER,
+        default_value TEXT,
+        framework_type TEXT,
+        call_function TEXT,
+        field_type TEXT,
+        field_base_type TEXT,
+        field_metadata TEXT
+    )""")
+    conn.execute("""CREATE TABLE edges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER,
+        target_id INTEGER,
+        kind TEXT,
+        line INTEGER,
+        source_file_id INTEGER
+    )""")
+
+    # Insert symbols
+    sym_id_map = {}  # name -> id
+    for sym in symbols:
+        # Support both old (_pending_field_call) and new (call_function) field names
+        call_function = sym.get("call_function") or sym.get("_pending_field_call")
+        field_metadata = sym.get("field_metadata")
+        if not field_metadata and sym.get("_pending_field_meta"):
+            meta = sym["_pending_field_meta"]
+            meta_filtered = {k: v for k, v in meta.items() if v is not None}
+            if meta_filtered:
+                field_metadata = json.dumps(meta_filtered)
+
+        conn.execute(
+            """INSERT INTO symbols
+               (name, qualified_name, kind, signature, line_start, line_end,
+                docstring, visibility, is_exported, default_value,
+                framework_type, call_function, field_type, field_base_type,
+                field_metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                sym["name"], sym["qualified_name"], sym["kind"],
+                sym["signature"], sym["line_start"], sym["line_end"],
+                sym["docstring"], sym["visibility"],
+                1 if sym["is_exported"] else 0,
+                sym.get("default_value"), sym.get("framework_type"),
+                call_function, sym.get("field_type"),
+                sym.get("field_base_type"), field_metadata,
+            ),
+        )
+        row = conn.execute("SELECT last_insert_rowid()").fetchone()
+        sym_id_map[sym["qualified_name"] or sym["name"]] = row[0]
+        # Also map by short name for reference resolution
+        if sym["name"] not in sym_id_map:
+            sym_id_map[sym["name"]] = row[0]
+
+    # Set parent_id for nested symbols
+    for sym in symbols:
+        if sym.get("parent_name"):
+            parent_id = sym_id_map.get(sym["parent_name"])
+            sym_id = sym_id_map.get(sym["qualified_name"] or sym["name"])
+            if parent_id and sym_id:
+                conn.execute(
+                    "UPDATE symbols SET parent_id = ? WHERE id = ?",
+                    (parent_id, sym_id),
+                )
+
+    # Insert inherits edges from references
+    for ref in references:
+        if ref["kind"] == "inherits":
+            source_id = sym_id_map.get(ref.get("source_name"))
+            target_id = sym_id_map.get(ref.get("target_name"))
+            if source_id and target_id:
+                conn.execute(
+                    "INSERT INTO edges (source_id, target_id, kind, line, source_file_id) "
+                    "VALUES (?, ?, 'inherits', ?, 1)",
+                    (source_id, target_id, ref.get("line", 0)),
+                )
+
+    conn.commit()
+
+    # Run DB-level resolution
+    resolve_django_inheritance(conn)
+    resolve_django_custom_fields(conn)
+
+    # Query back updated symbols
+    rows = conn.execute(
+        "SELECT id, name, qualified_name, kind, framework_type, "
+        "field_type, field_base_type, call_function, field_metadata, "
+        "parent_id, line_start, line_end, signature, docstring, "
+        "visibility, is_exported, default_value "
+        "FROM symbols ORDER BY id"
+    ).fetchall()
+
+    # Rebuild symbol dicts, merging DB updates with original in-memory data
+    updated_symbols = []
+    for i, row in enumerate(rows):
+        # Start from original symbol to preserve non-DB fields
+        if i < len(symbols):
+            sym = dict(symbols[i])
+        else:
+            sym = {}
+
+        # Overlay DB-resolved values
+        sym["framework_type"] = row["framework_type"]
+        if row["field_type"]:
+            sym["django_field"] = True
+            sym["field_type"] = row["field_type"]
+        if row["field_base_type"]:
+            sym["field_base_type"] = row["field_base_type"]
+
+        # Reconstruct relationship metadata from field_metadata JSON
+        if row["field_metadata"]:
+            try:
+                meta = json.loads(row["field_metadata"])
+                if meta.get("target_model"):
+                    sym["relationship_target"] = meta["target_model"]
+                if meta.get("on_delete"):
+                    sym["on_delete"] = meta["on_delete"]
+                if meta.get("related_name"):
+                    sym["related_name"] = meta["related_name"]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        updated_symbols.append(sym)
+
+    conn.close()
+    return updated_symbols, references
+
+
 # ===========================================================================
 # 1. Transitive Model Inheritance
 # ===========================================================================
@@ -91,7 +248,7 @@ class TestTransitiveModelInheritance:
             "class Child(Base):\n"
             "    pass\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _ = _parse_py_resolved(src)
         base = _find_sym(syms, "Base")
         child = _find_sym(syms, "Child")
         assert base is not None
@@ -109,7 +266,7 @@ class TestTransitiveModelInheritance:
             "class Concrete(Middle):\n"
             "    pass\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _ = _parse_py_resolved(src)
         assert _find_sym(syms, "Base").get("framework_type") == "django_model"
         assert _find_sym(syms, "Middle").get("framework_type") == "django_model"
         assert _find_sym(syms, "Concrete").get("framework_type") == "django_model"
@@ -130,7 +287,7 @@ class TestTransitiveModelInheritance:
             "class B(A):\n"
             "    pass\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _ = _parse_py_resolved(src)
         a = _find_sym(syms, "A")
         b = _find_sym(syms, "B")
         assert a is not None
@@ -146,7 +303,7 @@ class TestTransitiveModelInheritance:
             "class M(SomeMixin, Base):\n"
             "    pass\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _ = _parse_py_resolved(src)
         m = _find_sym(syms, "M")
         assert m is not None
         assert m.get("framework_type") == "django_model"
@@ -163,7 +320,7 @@ class TestTransitiveModelInheritance:
             "class ServiceChild(ServiceBase):\n"
             "    pass\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _ = _parse_py_resolved(src)
         assert _find_sym(syms, "ModelA").get("framework_type") == "django_model"
         assert _find_sym(syms, "ChildA").get("framework_type") == "django_model"
         assert _find_sym(syms, "ServiceBase").get("framework_type") is None
