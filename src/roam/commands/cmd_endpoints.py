@@ -206,6 +206,9 @@ def _scan_python(source: str, file_path: str, rel_path: str) -> list[dict]:
         for m in pattern_re.finditer(source):
             path = m.group(1)
             handler = m.group(2)
+            # Skip .as_view patterns -- _DJANGO_AS_VIEW_RE handles CBV detection
+            if handler.endswith(".as_view"):
+                continue
             line = _line_of(source, m.start())
             # Only report if it looks like an actual URL pattern
             if "/" in path or path.startswith("^") or path.startswith(r"\b"):
@@ -274,6 +277,11 @@ def _scan_python(source: str, file_path: str, rel_path: str) -> list[dict]:
                         "framework": "drf",
                     }
                 )
+
+    # Safety net: strip .as_view suffix from any handler that slipped through
+    for ep in endpoints:
+        if ep["handler"].endswith(".as_view"):
+            ep["handler"] = ep["handler"][: -len(".as_view")]
 
     return endpoints
 
