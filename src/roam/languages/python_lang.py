@@ -103,6 +103,7 @@ class PythonExtractor(LanguageExtractor):
         dunder_all = self._find_dunder_all(tree.root_node, source)
         self._walk_node(tree.root_node, source, file_path, symbols, parent_name=None, dunder_all=dunder_all)
         self._resolve_transitive_inheritance(symbols)
+        self._resolve_custom_fields(symbols)
         return symbols
 
     def extract_references(self, tree, source: bytes, file_path: str) -> list[dict]:
@@ -419,6 +420,81 @@ class PythonExtractor(LanguageExtractor):
             name for name, is_model in resolved.items() if is_model
         }
 
+    def _resolve_custom_fields(self, symbols: list[dict]) -> None:
+        """Build a map from custom field class names to their resolved Django base field type.
+
+        Uses self._inheritance_map (built by _resolve_transitive_inheritance) to walk
+        the inheritance chain of each class and check if any ancestor is a known
+        Django field type. Then retroactively tags symbols with pending field calls,
+        setting field_type to the custom name and field_base_type to the resolved base.
+        """
+        inheritance_map = getattr(self, "_inheritance_map", {})
+        custom_field_map: dict[str, str] = {}
+
+        # Include direct Django field types for uniform lookup
+        for ft in _DJANGO_FIELD_TYPES:
+            custom_field_map[ft] = ft
+
+        # Memoization cache
+        resolved: dict[str, str | None] = {}
+
+        def _resolve_base_field(class_name: str, visited: set[str]) -> str | None:
+            if class_name in _DJANGO_FIELD_TYPES:
+                return class_name
+            if class_name in resolved:
+                return resolved[class_name]
+            if class_name in visited:
+                return None
+            visited.add(class_name)
+            parents = inheritance_map.get(class_name, set())
+            for p in parents:
+                base = _resolve_base_field(p, visited)
+                if base is not None:
+                    resolved[class_name] = base
+                    return base
+            resolved[class_name] = None
+            return None
+
+        for class_name in inheritance_map:
+            base = _resolve_base_field(class_name, set())
+            if base is not None:
+                custom_field_map[class_name] = base
+
+        self._custom_field_map = custom_field_map
+
+        # Second pass: resolve pending custom field calls on property symbols
+        for sym in symbols:
+            call_name = sym.pop("_pending_field_call", None)
+            meta = sym.pop("_pending_field_meta", None)
+            line = sym.pop("_pending_field_line", None)
+            parent = sym.pop("_pending_field_parent", None)
+            if call_name is None:
+                continue
+            if call_name not in custom_field_map:
+                continue
+            base_type = custom_field_map[call_name]
+            sym["django_field"] = True
+            sym["field_type"] = call_name
+            if base_type != call_name:
+                sym["field_base_type"] = base_type
+            # Handle relationship fields via custom classes
+            if base_type in _DJANGO_RELATIONSHIP_FIELDS and meta:
+                if meta.get("target_model"):
+                    sym["relationship_target"] = meta["target_model"]
+                if meta.get("on_delete"):
+                    sym["on_delete"] = meta["on_delete"]
+                if meta.get("related_name"):
+                    sym["related_name"] = meta["related_name"]
+                if meta.get("target_model"):
+                    self._pending_django_refs.append(
+                        {
+                            "source_class": parent,
+                            "target_model": meta["target_model"],
+                            "kind": _DJANGO_REL_KIND[base_type],
+                            "line": line,
+                        }
+                    )
+
     def _extract_assignment(self, node, source, symbols, dunder_all):
         left = node.child_by_field_name("left")
         if left is None:
@@ -504,6 +580,15 @@ class PythonExtractor(LanguageExtractor):
                                 "line": node.start_point[0] + 1,
                             }
                         )
+            else:
+                # Store call function name for deferred custom field resolution
+                call_name = self._extract_call_func_name(right, source)
+                if call_name:
+                    sym["_pending_field_call"] = call_name
+                    # Eagerly extract field meta in case this turns out to be a relationship field
+                    sym["_pending_field_meta"] = self._extract_django_field_meta(right, source)
+                    sym["_pending_field_line"] = node.start_point[0] + 1
+                    sym["_pending_field_parent"] = parent_name
 
         # Handle Meta inner class attributes
         if parent_name and parent_name.endswith(".Meta"):
@@ -543,6 +628,19 @@ class PythonExtractor(LanguageExtractor):
             func_name = self.node_text(func, source)
             if func_name in _DJANGO_FIELD_TYPES:
                 return func_name
+        return None
+
+    def _extract_call_func_name(self, call_node, source: bytes) -> str | None:
+        """Extract the function name from a call node (identifier or attribute)."""
+        func = call_node.child_by_field_name("function")
+        if func is None:
+            return None
+        if func.type == "attribute":
+            attr = func.child_by_field_name("attribute")
+            if attr:
+                return self.node_text(attr, source)
+        elif func.type == "identifier":
+            return self.node_text(func, source)
         return None
 
     def _extract_django_field_meta(self, call_node, source: bytes) -> dict:
