@@ -39,6 +39,15 @@ _DJANGO_REL_KIND = {
     "ManyToManyField": "django_m2m",
 }
 
+_DRF_VIEW_BASES = frozenset({
+    "APIView", "ViewSet", "ModelViewSet", "GenericViewSet",
+    "ViewSetMixin", "GenericAPIView", "CreateAPIView",
+    "ListAPIView", "RetrieveAPIView", "DestroyAPIView",
+    "UpdateAPIView", "ListCreateAPIView",
+    "RetrieveUpdateAPIView", "RetrieveDestroyAPIView",
+    "RetrieveUpdateDestroyAPIView", "ReadOnlyModelViewSet",
+})
+
 
 def resolve_django_inheritance(conn) -> int:
     """Resolve transitive Django model inheritance across all indexed files.
@@ -276,14 +285,14 @@ def resolve_django_custom_fields(conn) -> int:
     return len(updates)
 
 
-def resolve_django_relationships(conn) -> int:
+def resolve_django_relationships(conn) -> tuple[int, int]:
     """Resolve Django FK/O2O/M2M edges from field_metadata.
 
     Handles dotted target models (e.g., 'core.Currency') and 'self' references
     by stripping the app prefix and looking up by class name.  Only creates
     edges that don't already exist (avoids duplicates with reference-resolution).
 
-    Returns the number of new edges created.
+    Returns a tuple of (new_edges_created, total_edges).
     """
     # 1. Load existing relationship edges to avoid duplicates
     existing = set()
@@ -292,6 +301,7 @@ def resolve_django_relationships(conn) -> int:
         "WHERE kind IN ('django_fk', 'django_o2o', 'django_m2m')"
     ).fetchall():
         existing.add((row["source_id"], row["target_id"], row["kind"]))
+    pre_existing = len(existing)
 
     # 2. Find properties with field_metadata containing target_model
     props = conn.execute(
@@ -371,7 +381,7 @@ def resolve_django_relationships(conn) -> int:
                 ],
             )
 
-    return len(new_edges)
+    return len(new_edges), pre_existing + len(new_edges)
 
 
 def _log(msg: str):
@@ -393,12 +403,13 @@ def resolve_all_django(conn, quiet: bool = False) -> dict:
     if not quiet and field_count:
         _log(f"  Django custom fields: {field_count} symbols updated")
 
-    rel_count = resolve_django_relationships(conn)
-    if not quiet and rel_count:
-        _log(f"  Django relationships: {rel_count} edges created")
+    new_rels, total_rels = resolve_django_relationships(conn)
+    if not quiet and total_rels:
+        _log(f"  Django relationships: {total_rels} edges ({new_rels} new)")
 
     return {
         "models_updated": model_count,
         "fields_updated": field_count,
-        "relationships_created": rel_count,
+        "relationships_created": new_rels,
+        "relationships_total": total_rels,
     }
