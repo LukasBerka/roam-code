@@ -445,3 +445,56 @@ class TestTransitiveEdgeCases:
         syms, _ = _parse_py(src)
         assert _find_sym(syms, "Parent").get("framework_type") == "django_model"
         assert _find_sym(syms, "Child").get("framework_type") == "django_model"
+
+    def test_transitive_model_fields_still_detected(self):
+        """Transitively-tagged model's fields should be detected correctly."""
+        src = (
+            "class BaseModel(models.Model):\n"
+            "    pass\n"
+            "class Article(BaseModel):\n"
+            "    title = models.CharField(max_length=200)\n"
+            "    author = models.ForeignKey(User, on_delete=models.CASCADE)\n"
+        )
+        syms, refs = _parse_py(src)
+        article = _find_sym(syms, "Article")
+        assert article.get("framework_type") == "django_model"
+        title = _find_sym(syms, "title", parent="Article")
+        assert title.get("field_type") == "CharField"
+        author = _find_sym(syms, "author", parent="Article")
+        assert author.get("field_type") == "ForeignKey"
+        fk_targets = _ref_targets(refs, kind="django_fk")
+        assert "User" in fk_targets
+
+    def test_transitive_model_meta_still_works(self):
+        """Transitively-tagged model referenced in Meta still creates meta_model ref."""
+        src = (
+            "class BaseModel(models.Model):\n"
+            "    pass\n"
+            "class Article(BaseModel):\n"
+            "    title = models.CharField(max_length=100)\n"
+            "class ArticleSerializer:\n"
+            "    class Meta:\n"
+            "        model = Article\n"
+            "        fields = ['title']\n"
+        )
+        syms, refs = _parse_py(src)
+        meta_targets = _ref_targets(refs, kind="meta_model")
+        assert "Article" in meta_targets
+        fields_sym = _find_sym(syms, "fields", parent="ArticleSerializer.Meta")
+        assert fields_sym is not None
+        assert fields_sym.get("meta_fields") == ["title"]
+
+    def test_non_django_inheritance_unaffected(self):
+        """Classes that don't inherit from Django bases are not tagged."""
+        src = (
+            "class Service(BaseService):\n"
+            "    pass\n"
+            "class BaseService:\n"
+            "    pass\n"
+            "class MyModel(models.Model):\n"
+            "    pass\n"
+        )
+        syms, _ = _parse_py(src)
+        assert _find_sym(syms, "Service").get("framework_type") is None
+        assert _find_sym(syms, "BaseService").get("framework_type") is None
+        assert _find_sym(syms, "MyModel").get("framework_type") == "django_model"
