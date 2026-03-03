@@ -138,9 +138,10 @@ def resolve_django_custom_fields(conn) -> int:
 
     Returns the number of symbols updated.
     """
-    # 1. Load class symbols
+    # 1. Load class symbols (include framework_type and field_base_type for fast-path seeding)
     class_rows = conn.execute(
-        "SELECT id, name, qualified_name FROM symbols WHERE kind = 'class'"
+        "SELECT id, name, qualified_name, framework_type, field_base_type "
+        "FROM symbols WHERE kind = 'class'"
     ).fetchall()
     if not class_rows:
         return 0
@@ -173,6 +174,10 @@ def resolve_django_custom_fields(conn) -> int:
         if name in _DJANGO_FIELD_TYPES:
             resolved[sid] = name
             return name
+        # Fast-path: class tagged by python_lang.py as directly extending a Django field
+        if info.get("framework_type") == "django_field" and info.get("field_base_type"):
+            resolved[sid] = info["field_base_type"]
+            return info["field_base_type"]
         if sid in visited:
             resolved[sid] = None
             return None

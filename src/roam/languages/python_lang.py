@@ -335,6 +335,7 @@ class PythonExtractor(LanguageExtractor):
         # Extract base class names for inheritance tracking
         bases_node = node.child_by_field_name("superclasses")
         is_django_model = False
+        django_field_base = None
         if bases_node:
             for child in bases_node.children:
                 if child.type == "identifier":
@@ -342,6 +343,8 @@ class PythonExtractor(LanguageExtractor):
                     if base_name:
                         if base_name in _DJANGO_MODEL_BASES:
                             is_django_model = True
+                        if base_name in _DJANGO_FIELD_TYPES:
+                            django_field_base = base_name
                         self._pending_inherits.append(
                             {
                                 "class_name": qualified,
@@ -356,6 +359,8 @@ class PythonExtractor(LanguageExtractor):
                             is_django_model = True
                         # Use just the last part for matching (e.g. "enum.Enum" -> "Enum")
                         short_name = base_name.split(".")[-1]
+                        if short_name in _DJANGO_FIELD_TYPES:
+                            django_field_base = short_name
                         self._pending_inherits.append(
                             {
                                 "class_name": qualified,
@@ -365,6 +370,9 @@ class PythonExtractor(LanguageExtractor):
                         )
         if is_django_model:
             symbols[-1]["framework_type"] = "django_model"
+        if django_field_base:
+            symbols[-1]["framework_type"] = "django_field"
+            symbols[-1]["field_base_type"] = django_field_base
 
         # Walk class body for methods and nested classes
         body = node.child_by_field_name("body")

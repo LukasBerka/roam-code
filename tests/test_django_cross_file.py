@@ -219,6 +219,93 @@ class TestCrossFileCustomFields:
         assert row["field_base_type"] == "CharField"
         conn.close()
 
+    def test_cross_file_transitive_custom_field(self):
+        """File A: MyBaseField inherits DecimalField (tagged django_field).
+        File B: MyField inherits MyBaseField. File C: model uses MyField.
+
+        After resolution, the property has field_base_type="DecimalField"
+        even though the chain is MyField -> MyBaseField -> DecimalField.
+        """
+        from roam.index.django_post import resolve_django_custom_fields
+
+        conn = _make_db()
+        # File A: MyBaseField directly extends DecimalField (tagged by fast path)
+        decimalfield_id = _insert_class(conn, "DecimalField", file_id=1,
+                                        framework_type="django_field")
+        mybase_id = _insert_class(conn, "MyBaseField", file_id=1,
+                                  framework_type="django_field")
+        # Simulate fast-path: field_base_type set by python_lang.py
+        conn.execute(
+            "UPDATE symbols SET field_base_type = 'DecimalField' WHERE id = ?",
+            (mybase_id,),
+        )
+        _insert_inherits(conn, mybase_id, decimalfield_id)
+
+        # File B: MyField extends MyBaseField (both in DB, edge exists)
+        myfield_id = _insert_class(conn, "MyField", file_id=2)
+        _insert_inherits(conn, myfield_id, mybase_id)
+
+        # File C: model uses MyField
+        model_id = _insert_class(conn, "Article", file_id=3,
+                                 framework_type="django_model")
+        prop_id = _insert_property(conn, "price", parent_id=model_id,
+                                   file_id=3, call_function="MyField")
+        conn.commit()
+
+        count = resolve_django_custom_fields(conn)
+        assert count == 1
+
+        row = conn.execute(
+            "SELECT field_type, field_base_type FROM symbols WHERE id = ?",
+            (prop_id,),
+        ).fetchone()
+        assert row["field_type"] == "MyField"
+        assert row["field_base_type"] == "DecimalField"
+        conn.close()
+
+    def test_cross_file_custom_field_no_base_in_db(self):
+        """File A: MyBaseField(DecimalField) where DecimalField is NOT in DB.
+        MyBaseField has framework_type=django_field and field_base_type=DecimalField
+        set by python_lang.py fast path. File B: MyField(MyBaseField).
+        File C: model uses MyField.
+
+        This is the real-world scenario: Django's DecimalField is in site-packages
+        and never indexed. The fast-path tag on MyBaseField bridges the gap.
+        """
+        from roam.index.django_post import resolve_django_custom_fields
+
+        conn = _make_db()
+        # File A: MyBaseField — DecimalField is NOT in DB (site-packages)
+        mybase_id = _insert_class(conn, "MyBaseField", file_id=1,
+                                  framework_type="django_field")
+        conn.execute(
+            "UPDATE symbols SET field_base_type = 'DecimalField' WHERE id = ?",
+            (mybase_id,),
+        )
+        # No inherits edge to DecimalField — it's not in the DB
+
+        # File B: MyField extends MyBaseField
+        myfield_id = _insert_class(conn, "MyField", file_id=2)
+        _insert_inherits(conn, myfield_id, mybase_id)
+
+        # File C: model uses MyField
+        model_id = _insert_class(conn, "Article", file_id=3,
+                                 framework_type="django_model")
+        prop_id = _insert_property(conn, "price", parent_id=model_id,
+                                   file_id=3, call_function="MyField")
+        conn.commit()
+
+        count = resolve_django_custom_fields(conn)
+        assert count == 1
+
+        row = conn.execute(
+            "SELECT field_type, field_base_type FROM symbols WHERE id = ?",
+            (prop_id,),
+        ).fetchone()
+        assert row["field_type"] == "MyField"
+        assert row["field_base_type"] == "DecimalField"
+        conn.close()
+
     def test_cross_file_custom_fk(self):
         """File A: MyFK inherits ForeignKey. File B: model with MyFK property.
 
