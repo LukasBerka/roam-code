@@ -68,6 +68,28 @@ _DJANGO_MODEL_BASES = frozenset(
     }
 )
 
+# DRF view base classes for fast-path detection (duplicated from django_post.py)
+_DRF_VIEW_BASES = frozenset(
+    {
+        "APIView",
+        "ViewSet",
+        "ModelViewSet",
+        "GenericViewSet",
+        "ViewSetMixin",
+        "GenericAPIView",
+        "CreateAPIView",
+        "ListAPIView",
+        "RetrieveAPIView",
+        "DestroyAPIView",
+        "UpdateAPIView",
+        "ListCreateAPIView",
+        "RetrieveUpdateAPIView",
+        "RetrieveDestroyAPIView",
+        "RetrieveUpdateDestroyAPIView",
+        "ReadOnlyModelViewSet",
+    }
+)
+
 # Builtin type names that don't create real reference edges
 _BUILTIN_TYPES = frozenset(
     {
@@ -335,6 +357,7 @@ class PythonExtractor(LanguageExtractor):
         # Extract base class names for inheritance tracking
         bases_node = node.child_by_field_name("superclasses")
         is_django_model = False
+        is_drf_view = False
         django_field_base = None
         if bases_node:
             for child in bases_node.children:
@@ -345,6 +368,8 @@ class PythonExtractor(LanguageExtractor):
                             is_django_model = True
                         if base_name in _DJANGO_FIELD_TYPES:
                             django_field_base = base_name
+                        if base_name in _DRF_VIEW_BASES:
+                            is_drf_view = True
                         self._pending_inherits.append(
                             {
                                 "class_name": qualified,
@@ -361,6 +386,8 @@ class PythonExtractor(LanguageExtractor):
                         short_name = base_name.split(".")[-1]
                         if short_name in _DJANGO_FIELD_TYPES:
                             django_field_base = short_name
+                        if short_name in _DRF_VIEW_BASES:
+                            is_drf_view = True
                         self._pending_inherits.append(
                             {
                                 "class_name": qualified,
@@ -373,6 +400,8 @@ class PythonExtractor(LanguageExtractor):
         if django_field_base:
             symbols[-1]["framework_type"] = "django_field"
             symbols[-1]["field_base_type"] = django_field_base
+        if is_drf_view and not symbols[-1].get("framework_type"):
+            symbols[-1]["framework_type"] = "drf_view"
 
         # Walk class body for methods and nested classes
         body = node.child_by_field_name("body")
