@@ -401,3 +401,68 @@ class TestEndpointDedup:
         assert len(result) == 2
         methods = {ep["method"] for ep in result}
         assert methods == {"GET", "POST"}
+
+
+class TestModulePrefixedAsView:
+    """Test module-prefixed .as_view() patterns like views.BookView.as_view()."""
+
+    def test_module_prefixed_as_view_detected(self):
+        """views.BookView.as_view() produces handler 'BookView'."""
+        source = (
+            "from django.urls import path\n"
+            "from myapp import views\n"
+            "urlpatterns = [\n"
+            "    path('books/', views.BookView.as_view()),\n"
+            "]\n"
+        )
+        endpoints = _scan_python(source, "/fake/urls.py", "urls.py")
+        cbv_eps = [e for e in endpoints if e["handler"] == "BookView"]
+        assert len(cbv_eps) == 1
+        assert cbv_eps[0]["method"] == "ANY"
+        assert cbv_eps[0]["path"] == "/books/"
+        assert cbv_eps[0]["framework"] == "django"
+
+    def test_underscore_module_prefixed_as_view(self):
+        """order_views.GenerateQuoteFileAPIView.as_view() produces handler 'GenerateQuoteFileAPIView'."""
+        source = (
+            "from django.urls import path\n"
+            "from myapp import order_views\n"
+            "urlpatterns = [\n"
+            "    path('orders/generate/', order_views.GenerateQuoteFileAPIView.as_view()),\n"
+            "]\n"
+        )
+        endpoints = _scan_python(source, "/fake/urls.py", "urls.py")
+        cbv_eps = [e for e in endpoints if e["handler"] == "GenerateQuoteFileAPIView"]
+        assert len(cbv_eps) == 1
+        assert cbv_eps[0]["path"] == "/orders/generate/"
+
+    def test_mixed_bare_and_module_prefixed_as_view(self):
+        """Both bare and module-prefixed as_view patterns detected in same file."""
+        source = (
+            "from django.urls import path\n"
+            "from myapp.views import BookView\n"
+            "from myapp import order_views\n"
+            "urlpatterns = [\n"
+            "    path('books/', BookView.as_view()),\n"
+            "    path('orders/', order_views.OrderListView.as_view()),\n"
+            "]\n"
+        )
+        endpoints = _scan_python(source, "/fake/urls.py", "urls.py")
+        handlers = {e["handler"] for e in endpoints if e["method"] == "ANY"}
+        assert "BookView" in handlers
+        assert "OrderListView" in handlers
+
+    def test_no_duplicate_from_path_re_for_module_prefixed(self):
+        """Module-prefixed as_view should not produce duplicate from _DJANGO_PATH_RE."""
+        source = (
+            "from django.urls import path\n"
+            "from myapp import views\n"
+            "urlpatterns = [\n"
+            "    path('books/', views.BookView.as_view()),\n"
+            "]\n"
+        )
+        endpoints = _scan_python(source, "/fake/urls.py", "urls.py")
+        book_eps = [e for e in endpoints if "BookView" in e["handler"] or "views.BookView" in e["handler"]]
+        # Should have exactly 1 endpoint (from _DJANGO_AS_VIEW_RE), not 2
+        assert len(book_eps) == 1
+        assert book_eps[0]["handler"] == "BookView"
