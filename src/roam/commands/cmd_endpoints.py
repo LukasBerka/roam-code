@@ -822,7 +822,18 @@ def endpoints(ctx, framework, http_method, include_tests, group_by):
         file_rows = conn.execute("SELECT path FROM files").fetchall()
         file_paths = [r["path"] for r in file_rows]
 
+        # Collect DRF view names for framework enrichment
+        drf_rows = conn.execute(
+            "SELECT name FROM symbols WHERE framework_type = 'drf_view'"
+        ).fetchall()
+        drf_names = {r["name"] for r in drf_rows}
+
     all_endpoints = _collect_endpoints(project_root, file_paths, include_tests)
+
+    # Enrich Django endpoints with DRF framework type from DB
+    for ep in all_endpoints:
+        if ep["framework"] == "django" and ep["handler"] in drf_names:
+            ep["framework"] = "drf"
 
     # Apply filters
     if framework:
