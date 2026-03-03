@@ -46,8 +46,9 @@ _DJANGO_INCLUDE_RE = re.compile(
 )
 
 # Python/Django: path('books/', BookDetailView.as_view())
+# Also matches module-prefixed: views.BookView.as_view(), order_views.MyView.as_view()
 _DJANGO_AS_VIEW_RE = re.compile(
-    r"""(?:^|\b)(?:re_)?path\s*\(\s*r?['"]([^'"]+)['"]\s*,\s*(\w+)\.as_view\(\)""",
+    r"""(?:^|\b)(?:re_)?path\s*\(\s*r?['"]([^'"]+)['"]\s*,\s*(\w+(?:\.\w+)*)\.as_view\(\)""",
     re.MULTILINE,
 )
 
