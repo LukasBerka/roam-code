@@ -37,6 +37,10 @@ def extract_symbols(tree, source: bytes, file_path: str, extractor) -> list[dict
                 "parent_name": sym.get("parent_name"),
                 "default_value": sym.get("default_value"),
                 "framework_type": sym.get("framework_type"),
+                "call_function": sym.get("call_function"),
+                "field_type": sym.get("field_type"),
+                "field_base_type": sym.get("field_base_type"),
+                "field_metadata": sym.get("field_metadata"),
             }
         )
     return normalised
