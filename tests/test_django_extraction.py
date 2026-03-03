@@ -190,7 +190,8 @@ class TestDjangoRelationshipRefs:
         sym = _find_sym(syms, "user", parent="Comment")
         assert sym["relationship_target"] == "auth.User"
         fk_targets = _ref_targets(refs, kind="django_fk")
-        assert "auth.User" in fk_targets
+        # App prefix is stripped for resolution: "auth.User" -> "User"
+        assert "User" in fk_targets
 
     def test_fk_self_reference(self):
         src = (

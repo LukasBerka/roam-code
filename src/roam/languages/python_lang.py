@@ -454,16 +454,28 @@ class PythonExtractor(LanguageExtractor):
                         sym["on_delete"] = meta["on_delete"]
                     if meta.get("related_name"):
                         sym["related_name"] = meta["related_name"]
+                    # Persist field_metadata for DB-level resolution
+                    meta_filtered = {
+                        k: v for k, v in meta.items() if v is not None
+                    }
+                    if meta_filtered:
+                        sym["field_metadata"] = json.dumps(meta_filtered)
                     # Create pending reference
                     if meta.get("target_model"):
-                        self._pending_django_refs.append(
-                            {
-                                "source_class": parent_name,
-                                "target_model": meta["target_model"],
-                                "kind": _DJANGO_REL_KIND[field_type],
-                                "line": node.start_point[0] + 1,
-                            }
-                        )
+                        # Strip app prefix: "core.Currency" -> "Currency"
+                        target = meta["target_model"].split(".")[-1]
+                        # "self" means self-referential FK
+                        if target == "self":
+                            target = parent_name
+                        if target:
+                            self._pending_django_refs.append(
+                                {
+                                    "source_class": parent_name,
+                                    "target_model": target,
+                                    "kind": _DJANGO_REL_KIND[field_type],
+                                    "line": node.start_point[0] + 1,
+                                }
+                            )
             else:
                 # Store call function name for DB-level custom field resolution
                 call_name = self._extract_call_func_name(right, source)
