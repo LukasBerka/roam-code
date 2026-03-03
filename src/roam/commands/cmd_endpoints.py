@@ -636,6 +636,77 @@ _TEST_PATH_PATTERNS = re.compile(
 
 
 # ---------------------------------------------------------------------------
+# Django include() resolution
+# ---------------------------------------------------------------------------
+
+
+def _join_url_paths(prefix: str, child: str) -> str:
+    """Concatenate URL path segments, avoiding double slashes and ensuring leading slash."""
+    combined = prefix.rstrip("/") + "/" + child.lstrip("/")
+    if not combined.startswith("/"):
+        combined = "/" + combined
+    return combined
+
+
+def _resolve_django_includes(
+    endpoints: list[dict],
+    project_root: Path,
+    file_paths: list[str],
+) -> list[dict]:
+    """Resolve include() chains to produce full URL paths.
+
+    Expands INCLUDE entries by finding child URL patterns from the
+    included module and prepending the include prefix to their paths.
+    """
+
+    def _module_to_file(module_path: str) -> str | None:
+        suffix = module_path.replace(".", "/") + ".py"
+        for fp in file_paths:
+            norm = fp.replace("\\", "/")
+            if norm == suffix or norm.endswith("/" + suffix):
+                return fp
+        return None
+
+    # Separate includes from regular endpoints
+    includes = [e for e in endpoints if e["method"] == "INCLUDE"]
+    non_includes = [e for e in endpoints if e["method"] != "INCLUDE"]
+
+    # Build file -> endpoints index
+    by_file: dict[str, list[dict]] = {}
+    for ep in non_includes:
+        by_file.setdefault(ep["file"], []).append(ep)
+
+    # Also index includes by file for nested resolution
+    includes_by_file: dict[str, list[dict]] = {}
+    for inc in includes:
+        includes_by_file.setdefault(inc["file"], []).append(inc)
+
+    expanded: list[dict] = []
+
+    def _expand(prefix: str, module: str, depth: int) -> None:
+        if depth >= 5:
+            return
+        child_file = _module_to_file(module)
+        if child_file is None:
+            return
+        # Expand regular endpoints from child file
+        for ep in by_file.get(child_file, []):
+            full_path = _join_url_paths(prefix, ep["path"])
+            expanded.append({**ep, "path": full_path})
+        # Recursively expand nested includes
+        for inc in includes_by_file.get(child_file, []):
+            nested_prefix = _join_url_paths(prefix, inc["path"])
+            _expand(nested_prefix, inc["handler"], depth + 1)
+
+    for inc in includes:
+        _expand(inc["path"], inc["handler"], 0)
+        # Keep include as a group marker
+        expanded.append({**inc, "group": inc["handler"]})
+
+    return non_includes + expanded
+
+
+# ---------------------------------------------------------------------------
 # Main scan function
 # ---------------------------------------------------------------------------
 
