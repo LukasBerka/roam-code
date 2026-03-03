@@ -325,3 +325,79 @@ class TestResolveDjangoIncludes:
         # level0 -> level1 -> level2 -> level3 -> level4 -> level5 -> level6 (depth 6)
         fully_expanded = [e for e in result if "l0" in e["path"] and e["method"] == "ANY"]
         assert len(fully_expanded) == 0
+
+
+def _dedup(endpoints: list[dict]) -> list[dict]:
+    """Replicate the handler-based dedup logic from _collect_endpoints."""
+    best: dict[tuple, dict] = {}
+    for ep in endpoints:
+        key = (ep["method"], ep["handler"], ep["file"], ep["line"])
+        prev = best.get(key)
+        if prev is None or len(ep["path"]) > len(prev["path"]):
+            best[key] = ep
+    return list(best.values())
+
+
+class TestEndpointDedup:
+    """Test the handler-based dedup logic used in _collect_endpoints."""
+
+    def test_dedup_keeps_longest_path(self):
+        """Same handler/file/line with different paths keeps only the longest."""
+        endpoints = [
+            {"method": "ANY", "path": "/books/", "handler": "views.book_list",
+             "file": "myapp/urls.py", "line": 5, "framework": "django"},
+            {"method": "ANY", "path": "/api/books/", "handler": "views.book_list",
+             "file": "myapp/urls.py", "line": 5, "framework": "django"},
+            {"method": "ANY", "path": "/v1/api/books/", "handler": "views.book_list",
+             "file": "myapp/urls.py", "line": 5, "framework": "django"},
+        ]
+        result = _dedup(endpoints)
+        assert len(result) == 1
+        assert result[0]["path"] == "/v1/api/books/"
+
+    def test_dedup_preserves_different_handlers(self):
+        """Endpoints at different file:line with different handlers both survive."""
+        endpoints = [
+            {"method": "ANY", "path": "/books/", "handler": "views.book_list",
+             "file": "myapp/urls.py", "line": 5, "framework": "django"},
+            {"method": "ANY", "path": "/authors/", "handler": "views.author_list",
+             "file": "myapp/urls.py", "line": 7, "framework": "django"},
+        ]
+        result = _dedup(endpoints)
+        assert len(result) == 2
+        handlers = {ep["handler"] for ep in result}
+        assert handlers == {"views.book_list", "views.author_list"}
+
+    def test_dedup_nested_include_single_result(self):
+        """3-level include chain produces exactly 1 non-INCLUDE endpoint per handler."""
+        # Simulate what _resolve_django_includes returns for a 3-level chain:
+        # original /books/ + expanded /resources/books/ + expanded /v1/resources/books/
+        endpoints = [
+            {"method": "INCLUDE", "path": "/v1/", "handler": "api.urls",
+             "file": "urls.py", "line": 3, "framework": "django"},
+            {"method": "INCLUDE", "path": "/resources/", "handler": "myapp.urls",
+             "file": "api/urls.py", "line": 3, "framework": "django"},
+            {"method": "ANY", "path": "/books/", "handler": "views.book_list",
+             "file": "myapp/urls.py", "line": 5, "framework": "django"},
+            {"method": "ANY", "path": "/resources/books/", "handler": "views.book_list",
+             "file": "myapp/urls.py", "line": 5, "framework": "django"},
+            {"method": "ANY", "path": "/v1/resources/books/", "handler": "views.book_list",
+             "file": "myapp/urls.py", "line": 5, "framework": "django"},
+        ]
+        result = _dedup(endpoints)
+        non_include = [ep for ep in result if ep["method"] != "INCLUDE"]
+        assert len(non_include) == 1
+        assert non_include[0]["path"] == "/v1/resources/books/"
+
+    def test_dedup_different_methods_same_handler_preserved(self):
+        """Same handler at same file:line with different methods both survive."""
+        endpoints = [
+            {"method": "GET", "path": "/books/", "handler": "views.book_list",
+             "file": "myapp/urls.py", "line": 5, "framework": "django"},
+            {"method": "POST", "path": "/books/", "handler": "views.book_list",
+             "file": "myapp/urls.py", "line": 5, "framework": "django"},
+        ]
+        result = _dedup(endpoints)
+        assert len(result) == 2
+        methods = {ep["method"] for ep in result}
+        assert methods == {"GET", "POST"}
