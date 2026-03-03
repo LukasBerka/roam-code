@@ -182,13 +182,14 @@ class DjangoBridge(LanguageBridge):
         """
         edges: list[dict] = []
         model_index = _build_model_index(target_files)
+        symbol_index = _build_symbol_index(target_files)
 
         edges.extend(self._resolve_admin(source_path, source_symbols, model_index))
         edges.extend(self._resolve_meta_model(source_path, source_symbols, model_index))
         edges.extend(self._resolve_signals(source_symbols, model_index))
         edges.extend(self._resolve_celery(source_symbols))
-        edges.extend(self._resolve_urls(source_path, source_symbols, target_files))
-        edges.extend(self._resolve_drf_routers(source_path, source_symbols, target_files))
+        edges.extend(self._resolve_urls(source_path, source_symbols, target_files, symbol_index))
+        edges.extend(self._resolve_drf_routers(source_path, source_symbols, target_files, symbol_index))
 
         return edges
 
@@ -461,14 +462,12 @@ class DjangoBridge(LanguageBridge):
         source_path: str,
         source_symbols: list[dict],
         target_files: dict[str, list[dict]],
+        symbol_index: dict[str, str],
     ) -> list[dict]:
         edges: list[dict] = []
         path_lower = source_path.lower()
         if "urls" not in path_lower and "url" not in path_lower:
             return edges
-
-        # Build symbol index for view matching
-        symbol_index = _build_symbol_index(target_files)
 
         for sym in source_symbols:
             sig = sym.get("signature", "") or ""
@@ -616,14 +615,13 @@ class DjangoBridge(LanguageBridge):
         source_path: str,
         source_symbols: list[dict],
         target_files: dict[str, list[dict]],
+        symbol_index: dict[str, str],
     ) -> list[dict]:
         """Detect DRF router.register() calls and synthesize routes_to edges."""
         edges: list[dict] = []
         path_lower = source_path.lower()
         if "urls" not in path_lower and "url" not in path_lower:
             return edges
-
-        symbol_index = _build_symbol_index(target_files)
 
         for sym in source_symbols:
             sig = sym.get("signature", "") or ""
