@@ -247,13 +247,15 @@ def _scan_python(source: str, file_path: str, rel_path: str) -> list[dict]:
         for m in _DJANGO_AS_VIEW_RE.finditer(source):
             path = m.group(1)
             view_class = m.group(2)
+            # Strip module prefix (e.g., "views.BookView" -> "BookView")
+            handler_name = view_class.rsplit(".", 1)[-1]
             line = _line_of(source, m.start())
             path_str = path if path.startswith("/") else "/" + path.lstrip("^").rstrip("$")
             endpoints.append(
                 {
                     "method": "ANY",
                     "path": path_str,
-                    "handler": view_class,
+                    "handler": handler_name,
                     "file": rel_path,
                     "line": line,
                     "framework": "django",
