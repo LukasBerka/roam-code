@@ -57,6 +57,89 @@ def _ref_targets(refs, kind=None, source_name=None):
     return result
 
 
+def _parse_py_resolved(source_text: str, file_path: str = "example.py"):
+    """Parse Python source with DB-level Django resolution.
+
+    Returns (symbols, references) where symbols include transitive
+    inheritance resolution results from django_post.
+    """
+    import sqlite3
+
+    from roam.index.django_post import resolve_django_inheritance
+
+    symbols, references = _parse_py(source_text, file_path)
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("""CREATE TABLE symbols (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_id INTEGER DEFAULT 1,
+        name TEXT NOT NULL,
+        qualified_name TEXT,
+        kind TEXT NOT NULL,
+        signature TEXT,
+        line_start INTEGER,
+        line_end INTEGER,
+        docstring TEXT,
+        visibility TEXT DEFAULT 'public',
+        is_exported INTEGER DEFAULT 1,
+        parent_id INTEGER,
+        default_value TEXT,
+        framework_type TEXT,
+        call_function TEXT,
+        field_type TEXT,
+        field_base_type TEXT,
+        field_metadata TEXT
+    )""")
+    conn.execute("""CREATE TABLE edges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER,
+        target_id INTEGER,
+        kind TEXT,
+        line INTEGER,
+        source_file_id INTEGER
+    )""")
+
+    sym_id_map = {}
+    for sym in symbols:
+        conn.execute(
+            """INSERT INTO symbols
+               (name, qualified_name, kind, framework_type)
+               VALUES (?, ?, ?, ?)""",
+            (sym["name"], sym["qualified_name"], sym["kind"],
+             sym.get("framework_type")),
+        )
+        row = conn.execute("SELECT last_insert_rowid()").fetchone()
+        sym_id_map[sym["qualified_name"] or sym["name"]] = row[0]
+        if sym["name"] not in sym_id_map:
+            sym_id_map[sym["name"]] = row[0]
+
+    for ref in references:
+        if ref["kind"] == "inherits":
+            source_id = sym_id_map.get(ref.get("source_name"))
+            target_id = sym_id_map.get(ref.get("target_name"))
+            if source_id and target_id:
+                conn.execute(
+                    "INSERT INTO edges (source_id, target_id, kind, line, source_file_id) "
+                    "VALUES (?, ?, 'inherits', ?, 1)",
+                    (source_id, target_id, ref.get("line", 0)),
+                )
+
+    conn.commit()
+    resolve_django_inheritance(conn)
+
+    rows = conn.execute(
+        "SELECT id, name, framework_type FROM symbols ORDER BY id"
+    ).fetchall()
+
+    for i, row in enumerate(rows):
+        if i < len(symbols):
+            symbols[i]["framework_type"] = row["framework_type"]
+
+    conn.close()
+    return symbols, references
+
+
 def _find_sym(symbols, name, parent=None):
     """Find a single symbol by name and optional parent."""
     for s in symbols:
@@ -417,7 +500,7 @@ class TestTransitiveEdgeCases:
             "class Diamond(Left, Right):\n"
             "    pass\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _ = _parse_py_resolved(src)
         assert _find_sym(syms, "Base").get("framework_type") == "django_model"
         assert _find_sym(syms, "Left").get("framework_type") == "django_model"
         assert _find_sym(syms, "Right").get("framework_type") == "django_model"
@@ -431,7 +514,7 @@ class TestTransitiveEdgeCases:
             "class ProxyUser(CustomUser):\n"
             "    pass\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _ = _parse_py_resolved(src)
         assert _find_sym(syms, "CustomUser").get("framework_type") == "django_model"
         assert _find_sym(syms, "ProxyUser").get("framework_type") == "django_model"
 
@@ -443,7 +526,7 @@ class TestTransitiveEdgeCases:
             "class Parent(models.Model):\n"
             "    pass\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _ = _parse_py_resolved(src)
         assert _find_sym(syms, "Parent").get("framework_type") == "django_model"
         assert _find_sym(syms, "Child").get("framework_type") == "django_model"
 
@@ -456,7 +539,7 @@ class TestTransitiveEdgeCases:
             "    title = models.CharField(max_length=200)\n"
             "    author = models.ForeignKey(User, on_delete=models.CASCADE)\n"
         )
-        syms, refs = _parse_py(src)
+        syms, refs = _parse_py_resolved(src)
         article = _find_sym(syms, "Article")
         assert article.get("framework_type") == "django_model"
         title = _find_sym(syms, "title", parent="Article")
@@ -522,12 +605,12 @@ class TestTransitiveEdgeCases:
             "class MyModel(AuditMixin, Base):\n"
             "    pass\n"
         )
-        syms, _ = _parse_py(src)
+        syms, _ = _parse_py_resolved(src)
         assert _find_sym(syms, "MyModel").get("framework_type") == "django_model"
         assert _find_sym(syms, "AuditMixin").get("framework_type") is None
 
     def test_multiple_files_independent(self):
-        """Separate _parse_py calls do not share inheritance state."""
+        """Separate _parse_py_resolved calls do not share inheritance state."""
         src_a = (
             "class Base(models.Model):\n"
             "    pass\n"
@@ -540,8 +623,8 @@ class TestTransitiveEdgeCases:
             "class SomeOther:\n"
             "    pass\n"
         )
-        syms_a, _ = _parse_py(src_a)
-        syms_b, _ = _parse_py(src_b)
+        syms_a, _ = _parse_py_resolved(src_a)
+        syms_b, _ = _parse_py_resolved(src_b)
         # First file: Child is a Django model (inherits Base -> models.Model)
         assert _find_sym(syms_a, "Child").get("framework_type") == "django_model"
         # Second file: Child is NOT a Django model (no Django ancestors)
