@@ -25,7 +25,11 @@ CREATE TABLE IF NOT EXISTS symbols (
     is_exported INTEGER DEFAULT 1,
     parent_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
     default_value TEXT,
-    framework_type TEXT
+    framework_type TEXT,
+    call_function TEXT,
+    field_type TEXT,
+    field_base_type TEXT,
+    field_metadata TEXT
 );
 
 CREATE TABLE IF NOT EXISTS edges (
