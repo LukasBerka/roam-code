@@ -90,7 +90,7 @@ _DRF_ROUTER_RE = re.compile(
 
 def _build_model_index(
     target_files: dict[str, list[dict]],
-) -> dict[str, str]:
+) -> dict[str, tuple[str, bool]]:
     """Build a name -> qualified_name index of model classes in target files.
 
     Prefers symbols with framework_type='django_model' but also indexes
