@@ -759,7 +759,13 @@ def _collect_endpoints(project_root: Path, file_paths: list[str], include_tests:
         endpoints = _scan_file(full_path, rel_path)
         all_endpoints.extend(endpoints)
 
-    # Deduplicate: same (method, path, file, line) — can happen with multi-match
+    # Resolve Django include() chains to produce full URL paths
+    all_endpoints = _resolve_django_includes(all_endpoints, project_root, file_paths)
+
+    # Deduplicate: prefer expanded full-path endpoints over partial-path originals.
+    # When an expanded endpoint shares (file, line, method) with an original,
+    # the expanded one (which comes after non_includes) wins because we process
+    # in order and keep the last seen for same (file, line).
     seen: set[tuple] = set()
     unique: list[dict] = []
     for ep in all_endpoints:
