@@ -344,6 +344,140 @@ class TestCrossFileCustomFields:
 
 
 # ===========================================================================
+# 2b. Cross-File Relationship Resolution
+# ===========================================================================
+
+
+class TestCrossFileRelationships:
+    """Test FK/O2O/M2M edge resolution across file boundaries."""
+
+    def test_dotted_target_model(self):
+        """FK with 'app.ModelName' target resolved by stripping app prefix."""
+        from roam.index.django_post import resolve_django_relationships
+
+        conn = _make_db()
+        post_id = _insert_class(conn, "Post", file_id=1,
+                                framework_type="django_model")
+        user_id = _insert_class(conn, "User", file_id=2,
+                                framework_type="django_model")
+        meta = json.dumps({"target_model": "auth.User"})
+        _insert_property(conn, "author", parent_id=post_id,
+                         file_id=1, call_function=None,
+                         field_metadata=meta)
+        # Set field_type directly (simulates standard FK detection)
+        conn.execute(
+            "UPDATE symbols SET field_type = 'ForeignKey' WHERE name = 'author'")
+        conn.commit()
+
+        count = resolve_django_relationships(conn)
+        assert count == 1
+
+        edges = conn.execute(
+            "SELECT source_id, target_id, kind FROM edges WHERE kind = 'django_fk'"
+        ).fetchall()
+        assert len(edges) == 1
+        assert edges[0]["source_id"] == post_id
+        assert edges[0]["target_id"] == user_id
+        conn.close()
+
+    def test_self_referential_fk(self):
+        """FK with 'self' target resolves to the parent model."""
+        from roam.index.django_post import resolve_django_relationships
+
+        conn = _make_db()
+        cat_id = _insert_class(conn, "Category", file_id=1,
+                               framework_type="django_model")
+        meta = json.dumps({"target_model": "self"})
+        _insert_property(conn, "parent", parent_id=cat_id,
+                         file_id=1, call_function=None,
+                         field_metadata=meta)
+        conn.execute(
+            "UPDATE symbols SET field_type = 'ForeignKey' WHERE name = 'parent'")
+        conn.commit()
+
+        count = resolve_django_relationships(conn)
+        assert count == 1
+
+        edges = conn.execute(
+            "SELECT source_id, target_id, kind FROM edges WHERE kind = 'django_fk'"
+        ).fetchall()
+        assert len(edges) == 1
+        assert edges[0]["source_id"] == cat_id
+        assert edges[0]["target_id"] == cat_id  # self-referential
+        conn.close()
+
+    def test_no_duplicate_edges(self):
+        """Don't create duplicate edges if reference resolution already created one."""
+        from roam.index.django_post import resolve_django_relationships
+
+        conn = _make_db()
+        post_id = _insert_class(conn, "Post", file_id=1,
+                                framework_type="django_model")
+        user_id = _insert_class(conn, "User", file_id=2,
+                                framework_type="django_model")
+        # Pre-existing edge (from reference resolution)
+        conn.execute(
+            "INSERT INTO edges (source_id, target_id, kind, line, source_file_id) "
+            "VALUES (?, ?, 'django_fk', 1, 1)",
+            (post_id, user_id))
+        meta = json.dumps({"target_model": "User"})
+        _insert_property(conn, "author", parent_id=post_id,
+                         file_id=1, call_function=None,
+                         field_metadata=meta)
+        conn.execute(
+            "UPDATE symbols SET field_type = 'ForeignKey' WHERE name = 'author'")
+        conn.commit()
+
+        count = resolve_django_relationships(conn)
+        assert count == 0  # no new edges
+
+        edges = conn.execute(
+            "SELECT COUNT(*) as cnt FROM edges WHERE kind = 'django_fk'"
+        ).fetchone()
+        assert edges["cnt"] == 1  # still just one
+        conn.close()
+
+    def test_m2m_and_o2o_edges(self):
+        """ManyToManyField and OneToOneField create correct edge kinds."""
+        from roam.index.django_post import resolve_django_relationships
+
+        conn = _make_db()
+        profile_id = _insert_class(conn, "Profile", file_id=1,
+                                   framework_type="django_model")
+        user_id = _insert_class(conn, "User", file_id=2,
+                                framework_type="django_model")
+        tag_id = _insert_class(conn, "Tag", file_id=3,
+                               framework_type="django_model")
+
+        meta_o2o = json.dumps({"target_model": "auth.User"})
+        _insert_property(conn, "user", parent_id=profile_id,
+                         file_id=1, call_function=None,
+                         field_metadata=meta_o2o)
+        conn.execute(
+            "UPDATE symbols SET field_type = 'OneToOneField' WHERE name = 'user'")
+
+        meta_m2m = json.dumps({"target_model": "tagging.Tag"})
+        _insert_property(conn, "tags", parent_id=profile_id,
+                         file_id=1, call_function=None,
+                         field_metadata=meta_m2m)
+        conn.execute(
+            "UPDATE symbols SET field_type = 'ManyToManyField' WHERE name = 'tags'")
+        conn.commit()
+
+        count = resolve_django_relationships(conn)
+        assert count == 2
+
+        edges = conn.execute(
+            "SELECT source_id, target_id, kind FROM edges "
+            "WHERE kind IN ('django_o2o', 'django_m2m') ORDER BY kind"
+        ).fetchall()
+        assert len(edges) == 2
+        kinds = {e["kind"] for e in edges}
+        assert kinds == {"django_o2o", "django_m2m"}
+        conn.close()
+
+
+# ===========================================================================
 # 3. Cross-File Cycle Detection
 # ===========================================================================
 

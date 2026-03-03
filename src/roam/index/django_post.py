@@ -276,6 +276,104 @@ def resolve_django_custom_fields(conn) -> int:
     return len(updates)
 
 
+def resolve_django_relationships(conn) -> int:
+    """Resolve Django FK/O2O/M2M edges from field_metadata.
+
+    Handles dotted target models (e.g., 'core.Currency') and 'self' references
+    by stripping the app prefix and looking up by class name.  Only creates
+    edges that don't already exist (avoids duplicates with reference-resolution).
+
+    Returns the number of new edges created.
+    """
+    # 1. Load existing relationship edges to avoid duplicates
+    existing = set()
+    for row in conn.execute(
+        "SELECT source_id, target_id, kind FROM edges "
+        "WHERE kind IN ('django_fk', 'django_o2o', 'django_m2m')"
+    ).fetchall():
+        existing.add((row["source_id"], row["target_id"], row["kind"]))
+
+    # 2. Find properties with field_metadata containing target_model
+    props = conn.execute(
+        "SELECT s.id, s.field_type, s.field_base_type, s.field_metadata, "
+        "       s.file_id, s.line_start, s.parent_id, p.name AS parent_name "
+        "FROM symbols s "
+        "LEFT JOIN symbols p ON s.parent_id = p.id "
+        "WHERE s.kind = 'property' AND s.field_metadata IS NOT NULL "
+        "AND s.parent_id IS NOT NULL"
+    ).fetchall()
+
+    new_edges = []
+    for prop in props:
+        # Determine the base relationship type
+        ft = prop["field_type"] or ""
+        fbt = prop["field_base_type"] or ""
+        rel_type = None
+        if ft in _DJANGO_RELATIONSHIP_FIELDS:
+            rel_type = ft
+        elif fbt in _DJANGO_RELATIONSHIP_FIELDS:
+            rel_type = fbt
+        if not rel_type:
+            continue
+
+        try:
+            meta = json.loads(prop["field_metadata"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        target_model = meta.get("target_model")
+        if not target_model:
+            continue
+
+        # Strip app prefix: "core.Currency" -> "Currency"
+        target_name = target_model.split(".")[-1]
+
+        # Handle "self" references
+        if target_name == "self":
+            target_name = prop["parent_name"]
+        if not target_name:
+            continue
+
+        edge_kind = _DJANGO_REL_KIND.get(rel_type)
+        if not edge_kind:
+            continue
+
+        # Find target class symbol
+        target_sym = conn.execute(
+            "SELECT id FROM symbols WHERE name = ? AND kind = 'class' LIMIT 1",
+            (target_name,),
+        ).fetchone()
+        if not target_sym:
+            continue
+
+        source_id = prop["parent_id"]
+        target_id = target_sym["id"]
+        edge_key = (source_id, target_id, edge_kind)
+        if edge_key in existing:
+            continue
+        existing.add(edge_key)
+
+        new_edges.append({
+            "source_id": source_id,
+            "target_id": target_id,
+            "kind": edge_kind,
+            "line": prop["line_start"],
+            "source_file_id": prop["file_id"],
+        })
+
+    if new_edges:
+        with conn:
+            conn.executemany(
+                "INSERT INTO edges (source_id, target_id, kind, line, source_file_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (e["source_id"], e["target_id"], e["kind"], e["line"], e["source_file_id"])
+                    for e in new_edges
+                ],
+            )
+
+    return len(new_edges)
+
+
 def _log(msg: str):
     """Log to stderr."""
     sys.stderr.write(f"{msg}\n")
@@ -295,4 +393,12 @@ def resolve_all_django(conn, quiet: bool = False) -> dict:
     if not quiet and field_count:
         _log(f"  Django custom fields: {field_count} symbols updated")
 
-    return {"models_updated": model_count, "fields_updated": field_count}
+    rel_count = resolve_django_relationships(conn)
+    if not quiet and rel_count:
+        _log(f"  Django relationships: {rel_count} edges created")
+
+    return {
+        "models_updated": model_count,
+        "fields_updated": field_count,
+        "relationships_created": rel_count,
+    }
