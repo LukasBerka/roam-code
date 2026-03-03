@@ -138,6 +138,98 @@ def resolve_django_inheritance(conn) -> int:
     return len(to_update)
 
 
+def resolve_drf_views(conn) -> int:
+    """Resolve transitive DRF view inheritance across all indexed files.
+
+    Queries inherits edges and symbols table to build a full inheritance
+    graph, walks transitively with cycle detection, and batch-updates
+    framework_type='drf_view' on all transitive DRF view descendants.
+
+    Does NOT overwrite existing framework_type values (e.g. 'django_model').
+
+    Returns the number of symbols updated.
+    """
+    # 1. Load class symbols
+    class_rows = conn.execute(
+        "SELECT id, name, qualified_name, framework_type "
+        "FROM symbols WHERE kind = 'class'"
+    ).fetchall()
+    if not class_rows:
+        return 0
+
+    class_by_id = {r["id"]: dict(r) for r in class_rows}
+    ids_by_name = {}
+    for r in class_rows:
+        ids_by_name.setdefault(r["name"], set()).add(r["id"])
+
+    # 2. Load inherits edges
+    inherits_rows = conn.execute(
+        "SELECT source_id, target_id FROM edges WHERE kind = 'inherits'"
+    ).fetchall()
+
+    parent_ids = {}
+    for r in inherits_rows:
+        src, tgt = r["source_id"], r["target_id"]
+        if src in class_by_id:
+            parent_ids.setdefault(src, set()).add(tgt)
+
+    # 3. Already-tagged: symbols with framework_type='drf_view' OR name in _DRF_VIEW_BASES
+    already_tagged = {
+        sid for sid, info in class_by_id.items()
+        if info["framework_type"] == "drf_view"
+        or info["name"] in _DRF_VIEW_BASES
+    }
+
+    # 4. Transitive resolution with memoization
+    resolved = {}  # symbol_id -> bool
+
+    def _is_drf_view(sid, visited):
+        if sid in resolved:
+            return resolved[sid]
+        if sid in already_tagged:
+            resolved[sid] = True
+            return True
+        if sid in visited:
+            resolved[sid] = False
+            return False
+        visited = visited | {sid}
+
+        for pid in parent_ids.get(sid, set()):
+            if pid in already_tagged:
+                resolved[sid] = True
+                return True
+            if pid in class_by_id:
+                if _is_drf_view(pid, visited):
+                    resolved[sid] = True
+                    return True
+
+        resolved[sid] = False
+        return False
+
+    # 5. Walk all class symbols
+    to_update = []
+    for sid in class_by_id:
+        if sid in already_tagged:
+            continue
+        # Only tag symbols that don't already have a framework_type
+        info = class_by_id[sid]
+        if info["framework_type"] and info["framework_type"] != "":
+            continue
+        if _is_drf_view(sid, set()):
+            to_update.append(sid)
+
+    # 6. Batch update
+    if to_update:
+        with conn:
+            for sid in to_update:
+                conn.execute(
+                    "UPDATE symbols SET framework_type = 'drf_view' WHERE id = ?",
+                    (sid,),
+                )
+
+    return len(to_update)
+
+
 def resolve_django_custom_fields(conn) -> int:
     """Resolve custom Django field types across all indexed files.
 
