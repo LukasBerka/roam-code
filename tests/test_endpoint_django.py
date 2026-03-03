@@ -403,6 +403,94 @@ class TestEndpointDedup:
         assert methods == {"GET", "POST"}
 
 
+class TestCommentedOutUrls:
+    """Verify that commented-out URL patterns are skipped."""
+
+    def test_commented_path_skipped(self):
+        """Lines starting with # should not produce endpoints."""
+        source = (
+            "from django.urls import path\n"
+            "urlpatterns = [\n"
+            "    path('active/', views.active),\n"
+            "    # path('disabled/', views.disabled),\n"
+            "]\n"
+        )
+        endpoints = _scan_python(source, "/fake/urls.py", "urls.py")
+        paths = [e["path"] for e in endpoints]
+        assert "/active/" in paths
+        assert "/disabled/" not in paths
+
+    def test_commented_url_skipped(self):
+        """Commented-out url() calls should not produce endpoints."""
+        source = (
+            "from django.conf.urls import url\n"
+            "urlpatterns = [\n"
+            "    url(r'^api/users/', views.users),\n"
+            "    # url(r'^__debug__/', include(debug_toolbar.urls)),\n"
+            "]\n"
+        )
+        endpoints = _scan_python(source, "/fake/urls.py", "urls.py")
+        paths = [e["path"] for e in endpoints]
+        assert any("api/users" in p for p in paths)
+        assert not any("debug" in p for p in paths)
+
+    def test_commented_include_skipped(self):
+        """Commented-out include() should not produce INCLUDE endpoints."""
+        source = (
+            "from django.urls import path, include\n"
+            "urlpatterns = [\n"
+            "    path('api/', include('myapp.urls')),\n"
+            "    # path('old/', include('legacy.urls')),\n"
+            "]\n"
+        )
+        endpoints = _scan_python(source, "/fake/urls.py", "urls.py")
+        includes = [e for e in endpoints if e["method"] == "INCLUDE"]
+        assert len(includes) == 1
+        assert includes[0]["handler"] == "myapp.urls"
+
+    def test_commented_as_view_skipped(self):
+        """Commented-out .as_view() should not produce endpoints."""
+        source = (
+            "from django.urls import path\n"
+            "urlpatterns = [\n"
+            "    path('books/', BookView.as_view()),\n"
+            "    # path('old/', OldView.as_view()),\n"
+            "]\n"
+        )
+        endpoints = _scan_python(source, "/fake/urls.py", "urls.py")
+        handlers = [e["handler"] for e in endpoints]
+        assert "BookView" in handlers
+        assert "OldView" not in handlers
+
+    def test_commented_drf_register_skipped(self):
+        """Commented-out router.register() should not produce DRF endpoints."""
+        source = (
+            "from rest_framework.routers import DefaultRouter\n"
+            "router = DefaultRouter()\n"
+            "router.register(r'users', UserViewSet)\n"
+            "# router.register(r'old', OldViewSet)\n"
+        )
+        endpoints = _scan_python(source, "/fake/urls.py", "urls.py")
+        drf_eps = [e for e in endpoints if e["framework"] == "drf"]
+        viewsets = {e["handler"] for e in drf_eps}
+        assert "UserViewSet" in viewsets
+        assert "OldViewSet" not in viewsets
+
+    def test_indented_comment_skipped(self):
+        """Comments with leading whitespace before # should also be skipped."""
+        source = (
+            "from django.urls import path\n"
+            "urlpatterns = [\n"
+            "    path('active/', views.active),\n"
+            "        # path('disabled/', views.disabled),\n"
+            "]\n"
+        )
+        endpoints = _scan_python(source, "/fake/urls.py", "urls.py")
+        paths = [e["path"] for e in endpoints]
+        assert "/active/" in paths
+        assert "/disabled/" not in paths
+
+
 class TestModulePrefixedAsView:
     """Test module-prefixed .as_view() patterns like views.BookView.as_view()."""
 

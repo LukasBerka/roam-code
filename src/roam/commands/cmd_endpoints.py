@@ -153,6 +153,12 @@ def _line_of(source: str, match_start: int) -> int:
     return source[:match_start].count("\n") + 1
 
 
+def _is_comment_line(source: str, pos: int) -> bool:
+    """Check if the match at *pos* falls on a Python comment line."""
+    line_start = source.rfind("\n", 0, pos) + 1
+    return source[line_start:pos].lstrip().startswith("#")
+
+
 # ---------------------------------------------------------------------------
 # Per-language scanners
 # ---------------------------------------------------------------------------
@@ -205,6 +211,8 @@ def _scan_python(source: str, file_path: str, rel_path: str) -> list[dict]:
     # Django path() / url()
     for pattern_re in (_DJANGO_PATH_RE, _DJANGO_URL_RE):
         for m in pattern_re.finditer(source):
+            if _is_comment_line(source, m.start()):
+                continue
             path = m.group(1)
             handler = m.group(2)
             # Skip .as_view patterns -- _DJANGO_AS_VIEW_RE handles CBV detection
@@ -228,6 +236,8 @@ def _scan_python(source: str, file_path: str, rel_path: str) -> list[dict]:
     # Django include() delegated URL configs
     if "include(" in source:
         for m in _DJANGO_INCLUDE_RE.finditer(source):
+            if _is_comment_line(source, m.start()):
+                continue
             prefix = m.group(1)
             module = m.group(2)
             line = _line_of(source, m.start())
@@ -246,6 +256,8 @@ def _scan_python(source: str, file_path: str, rel_path: str) -> list[dict]:
     # Django ViewClass.as_view() patterns
     if ".as_view()" in source:
         for m in _DJANGO_AS_VIEW_RE.finditer(source):
+            if _is_comment_line(source, m.start()):
+                continue
             path = m.group(1)
             view_class = m.group(2)
             # Strip module prefix (e.g., "views.BookView" -> "BookView")
@@ -266,6 +278,8 @@ def _scan_python(source: str, file_path: str, rel_path: str) -> list[dict]:
     # DRF router.register() CRUD endpoint synthesis
     if "register(" in source and ("rest_framework" in source or "DefaultRouter" in source or "SimpleRouter" in source):
         for m in _DRF_ROUTER_REGISTER_RE.finditer(source):
+            if _is_comment_line(source, m.start()):
+                continue
             prefix = m.group(1)
             viewset = m.group(2)
             line = _line_of(source, m.start())
