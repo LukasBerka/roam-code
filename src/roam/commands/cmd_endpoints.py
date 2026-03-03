@@ -762,17 +762,17 @@ def _collect_endpoints(project_root: Path, file_paths: list[str], include_tests:
     # Resolve Django include() chains to produce full URL paths
     all_endpoints = _resolve_django_includes(all_endpoints, project_root, file_paths)
 
-    # Deduplicate: prefer expanded full-path endpoints over partial-path originals.
-    # When an expanded endpoint shares (file, line, method) with an original,
-    # the expanded one (which comes after non_includes) wins because we process
-    # in order and keep the last seen for same (file, line).
-    seen: set[tuple] = set()
-    unique: list[dict] = []
+    # Deduplicate: collapse path variants from include() expansion.
+    # When the same handler at the same file:line appears with multiple path
+    # prefixes (original scan + expanded versions), keep the longest path
+    # which represents the fully-resolved URL.
+    best: dict[tuple, dict] = {}
     for ep in all_endpoints:
-        key = (ep["method"], ep["path"], ep["file"], ep["line"])
-        if key not in seen:
-            seen.add(key)
-            unique.append(ep)
+        key = (ep["method"], ep["handler"], ep["file"], ep["line"])
+        prev = best.get(key)
+        if prev is None or len(ep["path"]) > len(prev["path"]):
+            best[key] = ep
+    unique = list(best.values())
 
     # Sort: framework → method → path
     unique.sort(key=lambda e: (e["framework"], e["method"], e["path"]))
